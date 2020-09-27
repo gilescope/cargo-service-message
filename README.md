@@ -11,7 +11,7 @@ If you're using Teamcity or Teamcity Cloud then if you type:
 
 For now you can install it like this:
 ```sh
-cargo install --git https://github.com/gilescope/cargo-service-message.git
+cargo install cargo-service-message --git https://github.com/gilescope/cargo-service-message.git
 ```
 
 Licenced as Apache 2.0 or MIT at your choice.

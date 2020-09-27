@@ -95,10 +95,10 @@ fn run_tests(args: &[String]) -> Result<(), Box<dyn Error>> {
             }) => {
                 match event.as_str() {
                     "started" => {
-                    println!("##{}[testSuiteStarted name='{}']", brand, "test_count");
+                    println!("##{}[testSuiteStarted name='{}' flowId='{}']", brand, "test_count", "test_count");
                     }
                     "ok" => {
-                        println!("##{}[testSuiteFinished name='{}']", brand, "test_count");
+                        println!("##{}[testSuiteFinished name='{}' flowId='{}']", brand, "test_count", "test_count");
                     }
                     _ =>{ println!("format {}", event);}
                 }
@@ -117,17 +117,17 @@ fn run_tests(args: &[String]) -> Result<(), Box<dyn Error>> {
                 */
                 match event.as_str() {
                     "started" => {
-                    println!("##{}[testStarted name='{}']", brand, name);
+                    println!("##{}[testStarted name='{}' flowId='{}']", brand, name, name);
                     }
                     "ok" => {
                         if let Some(exec_time) = exec_time {
-                            println!("##{}[testFinished name='{}' duration='{}']", brand, name, exec_time);
+                            println!("##{}[testFinished name='{}' flowId='{}' duration='{}']", brand, name, name, exec_time);
                         } else {
-                            println!("##{}[testFinished name='{}']", brand, name);
+                            println!("##{}[testFinished name='{}' flowId='{}']", brand, name, name);
                         }
                     }
                     "failed" => {
-                        println!("##{}[testFailed name='{}' message='test failed' details='{}']", brand, name, escape_message(stdout.unwrap()));
+                        println!("##{}[testFailed name='{}' flowId='{}' message='test failed' details='{}']", brand, name, name, escape_message(stdout.unwrap()));
                         //special support for comparison failures expected / actual.
                         //##teamcity[testFailed type='comparisonFailure' name='MyTest.test2' message='failure message' details='message and stack trace' expected='expected value' actual='actual value']
                     }
@@ -135,7 +135,7 @@ fn run_tests(args: &[String]) -> Result<(), Box<dyn Error>> {
                 }
             },
             Err(err) => {
-                println!("errror");
+                println!("error {}", err);
             }
         }
     }
