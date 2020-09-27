@@ -42,7 +42,8 @@ fn cargo_service_message(argv: Vec<String>) -> Result<(), String> {
 #[derive(Deserialize, Debug)]
 #[serde(tag="type")]
 enum Event {
-    suite {
+    #[serde(alias = "suite")]
+    Suite {
         event: String,
         test_count: Option<i32>,
         passed: Option<i32>,
@@ -52,7 +53,8 @@ enum Event {
         measured: Option<i32>,
         filtered_out: Option<i32>
     },
-    test {
+    #[serde(alias = "test")]
+    Test {
         event: String,
         name: String,
         exec_time: Option<String>,
@@ -83,15 +85,9 @@ fn run_tests(args: &[String]) -> Result<(), Box<dyn Error>> {
 
     for value in stream {
         match value {
-            Ok(Event::suite{
+            Ok(Event::Suite{
                 event,
-                test_count,
-                passed,
-                failed,
-                allowed_fail,
-                ignored,
-                measured,
-                filtered_out
+                ..
             }) => {
                 match event.as_str() {
                     "started" => {
@@ -103,7 +99,7 @@ fn run_tests(args: &[String]) -> Result<(), Box<dyn Error>> {
                     _ =>{ println!("format {}", event);}
                 }
             },
-            Ok(Event::test {
+            Ok(Event::Test {
                 event,
                 name,
                 exec_time,
@@ -127,7 +123,7 @@ fn run_tests(args: &[String]) -> Result<(), Box<dyn Error>> {
                         }
                     }
                     "failed" => {
-                        println!("##{}[testFailed name='{}' flowId='{}' message='test failed' details='{}']", brand, name, name, escape_message(stdout.unwrap()));
+                        println!("##{}[testFailed name='{}' flowId='{}' message='test failed' details='{}']", brand, name, name, escape_message(stdout.unwrap_or_else(String::new)));
                         //special support for comparison failures expected / actual.
                         //##teamcity[testFailed type='comparisonFailure' name='MyTest.test2' message='failure message' details='message and stack trace' expected='expected value' actual='actual value']
                     }
