@@ -91,10 +91,10 @@ fn run_tests(args: &[String]) -> Result<(), Box<dyn Error>> {
             }) => {
                 match event.as_str() {
                     "started" => {
-                    println!("##{}[testSuiteStarted name='{}' flowId='{}']", brand, "test_count", "test_count");
+                    println!("##{}[testSuiteStarted name='{}' flowId='{}']", brand, "a_test_suite_name", "test_suite_flow_id");
                     }
                     "ok" => {
-                        println!("##{}[testSuiteFinished name='{}' flowId='{}']", brand, "test_count", "test_count");
+                        println!("##{}[testSuiteFinished name='{}' flowId='{}']", brand, "a_test_suite_name", "test_suite_flow_id");
                     }
                     _ =>{ println!("format {}", event);}
                 }
@@ -105,15 +105,10 @@ fn run_tests(args: &[String]) -> Result<(), Box<dyn Error>> {
                 exec_time,
                 stdout,
             }) => {
-                /*
-                TODO:
-                starting another test finishes the currently started test in the same flow.
-                To still report tests from within other tests, you will need to specify another
-                flowId in the nested test service messages.
-                */
+                let name = name.replace("::", ".");
                 match event.as_str() {
                     "started" => {
-                    println!("##{}[testStarted name='{}' flowId='{}']", brand, name, name);
+                    println!("##{}[testStarted name='{}' flowId='{}' parent='test_suite_flow_id']", brand, name, name);
                     }
                     "ok" => {
                         if let Some(exec_time) = exec_time {
