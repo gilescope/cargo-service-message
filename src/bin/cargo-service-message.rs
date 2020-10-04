@@ -1,30 +1,33 @@
 use serde_json::{Deserializer, Value};
-use std::error::Error;
-use std::process::{Command, Stdio};
 use std::collections::HashSet;
+use std::error::Error;
+use std::process::{Command, ExitStatus, Stdio};
 
 fn main() -> Result<(), String> {
     let options: Vec<String> = std::env::args().collect();
     println!("{:?}", &options);
-    cargo_service_message(options)
+    if let Ok(exist_status) = cargo_service_message(options) {
+        if let Some(exit_code) = exist_status.code() {
+            std::process::exit(exit_code);
+        } else {
+            // signal killed process
+            std::process::exit(-2);
+        }
+    } else {
+        std::process::exit(-1);
+    }
 }
 
-fn cargo_service_message(argv: Vec<String>) -> Result<(), String> {
+fn cargo_service_message(argv: Vec<String>) -> Result<ExitStatus, String> {
     if argv.len() < 2 {
         return Err(format!("Usage: 'test' as the next argument followed by the standard cargo test arguments. Found {:?}", argv));
-        //eyre!("swoops"));
     }
     if argv[1] != *"service-message" {
         return Err(format!("expected 'service-message' as the next argument followed by the standard cargo test arguments but got {}", argv[1]));
-        //eyre!("swoops"));
     }
-    // if argv[2] != *"test" {
-    //     return Err(format!("expected 'test' as the next argument followed by the standard cargo test arguments but got {}", argv[2]));
-    //     //eyre!("swoops"));
-    // }
 
-    run_tests(&argv[2..]).unwrap();
-    Ok(())
+    let exit_code = run_tests(&argv[2..]).unwrap();
+    Ok(exit_code)
 }
 
 /*
@@ -40,10 +43,13 @@ fn cargo_service_message(argv: Vec<String>) -> Result<(), String> {
 { "type": "suite", "event": "ok", "passed": 3, "failed": 0, "allowed_fail": 0, "ignored": 0, "measured": 0, "filtered_out": 0 }
 */
 
-fn run_tests(args: &[String]) -> Result<(), Box<dyn Error>> {
-    let mut dedupe = HashSet::new();
+fn run_tests(args: &[String]) -> Result<ExitStatus, Box<dyn Error>> {
+    let debug = false;
+    let brand = "teamcity";
+    let min_threshhold = 5.; // Any stat below 2 seconds would be noisy anyhow.
 
-    println!("running");
+    let mut dedupe: HashSet<String> = HashSet::new();
+
     let mut cmd = Command::new("cargo");
     cmd.stderr(Stdio::piped());
     cmd.stdout(Stdio::piped());
@@ -51,7 +57,12 @@ fn run_tests(args: &[String]) -> Result<(), Box<dyn Error>> {
 
     let cargo_cmd = args[0].clone(); //TODO support +nightly
 
-    cmd.arg("--message-format=json"); //TODO this needs to be before --
+    //Even though cargo clean doesn't do json at the moment it would be good if
+    // adding service-message was a no_op.
+    if cargo_cmd != "clean" {
+        cmd.arg("--message-format=json"); //TODO this needs to be before --
+        cmd.arg("-Ztimings=json,html,info");
+    }
 
     if !contains("--", args) {
         cmd.arg("--");
@@ -65,25 +76,56 @@ fn run_tests(args: &[String]) -> Result<(), Box<dyn Error>> {
         cmd.arg("json");
     }
     println!("spawning: {:?}", &cmd);
-    let child = cmd.spawn()?;
+    let mut child = cmd.spawn()?;
 
-    let brand = "teamcity";
-    let stream = Deserializer::from_reader(child.stdout.unwrap()).into_iter::<Value>();
+    let out_stream = Option::take(&mut child.stdout).unwrap();
+    let stream = Deserializer::from_reader(out_stream).into_iter::<Value>();
     let x = String::new();
     for value in stream {
         match value {
             Ok(Value::Object(event)) => {
                 if let Some(Value::String(compiler_msg)) = event.get("reason") {
-                    match compiler_msg.as_ref() { 
+                    match compiler_msg.as_ref() {
+                        "timing-info" => {
+                            if debug {
+                                println!("");
+                                println!("{:?}", &event);
+                            }
+                            let mut name = "anon".to_string();
+                            if let Some(Value::Object(target)) = event.get("target") {
+                                if let Some(Value::String(target_name)) = target.get("name") {
+                                    name = target_name.to_string()
+                                }
+                            }
+                            let mut mode = "mode".to_string();
+                            if let Some(Value::String(compile_mode)) = event.get("mode") {
+                                mode = compile_mode.to_string();
+                            }
+
+                            if let Some(Value::Number(duration)) = event.get("duration") {
+                                if let Some(duration) = duration.as_f64() {
+                                    if (duration > min_threshhold) {
+                                        println!(
+                                            "##{}[buildStatisticValue key='{} {}' value='{:.6}']",
+                                            brand, mode, name, duration
+                                        );
+                                    }
+                                }
+                            }
+                        }
                         "compiler-message" => {
                             if let Some(Value::Object(msg)) = event.get("message") {
                                 match msg.get("level") {
                                     Some(Value::String(level)) => {
-                                        if level.as_str() == "warning" {
-                                            let message = if let Some(Value::String(message)) = msg.get("rendered") {
-                                                
+                                        if level.as_str() == "warning" || level.as_str() == "error"
+                                        {
+                                            let message = if let Some(Value::String(message)) =
+                                                msg.get("rendered")
+                                            {
                                                 message.to_string()
-                                            } else {"".to_string()};
+                                            } else {
+                                                "".to_string()
+                                            };
 
                                             if message.len() > 0 {
                                                 // Rust has a habbit of giving you the same error message twice.
@@ -95,41 +137,55 @@ fn run_tests(args: &[String]) -> Result<(), Box<dyn Error>> {
                                             }
                                             //TODO ask jetbrains if there's a way we can embed html here as message could
                                             // do with being monospaced.
-//                                            let message = "<pre>".to_string() + &message + "</pre>";
+                                            //                                            let message = "<pre>".to_string() + &message + "</pre>";
 
                                             if let Some(Value::Object(code)) = msg.get("code") {
-                                                let explanation = if let Some(Value::String(explanation)) = code.get("explanation") {
-                                                    explanation.to_string()
-                                                } else { "no explanation".to_string() };
-                                                
-                                                let code = if let Some(Value::String(code)) = code.get("code") {
+                                                let explanation =
+                                                    if let Some(Value::String(explanation)) =
+                                                        code.get("explanation")
+                                                    {
+                                                        explanation.to_string()
+                                                    } else {
+                                                        "no explanation".to_string()
+                                                    };
+
+                                                let code = if let Some(Value::String(code)) =
+                                                    code.get("code")
+                                                {
                                                     code.to_string()
-                                                } else { "other".to_string() };
-                                                
+                                                } else {
+                                                    "other".to_string()
+                                                };
+
                                                 let mut file = "";
                                                 let mut line = 0u64;
-                                                if let Some(Value::Array(spans)) = msg.get("spans") {
+                                                if let Some(Value::Array(spans)) = msg.get("spans")
+                                                {
                                                     if let Value::Object(span) = &spans[0] {
-                                                        if let Some(Value::String(file_name)) = span.get("file_name")
+                                                        if let Some(Value::String(file_name)) =
+                                                            span.get("file_name")
                                                         {
                                                             file = &file_name;
                                                         }
-                                                        if let Some(Value::Number(line_number)) = span.get("line_start")
+                                                        if let Some(Value::Number(line_number)) =
+                                                            span.get("line_start")
                                                         {
-                                                            line = line_number.as_u64().unwrap_or(0);
+                                                            line =
+                                                                line_number.as_u64().unwrap_or(0);
                                                         }
                                                     }
                                                 }
-                                             
-                                                println!("##teamcity[inspectionType id='{}' category='warning' name='{}' description='{}']", code, code, explanation);
+
+                                                println!("##{}[inspectionType id='{}' category='warning' name='{}' description='{}']", brand,code, code, explanation);
                                                 println!("##{}[inspection typeId='{}' message='{}' file='{}' line='{}' SEVERITY='{}']", brand, code, escape_message(message), file, line, level);
                                                 //additional attribute='<additional attribute>'
                                             }
                                         }
                                     }
-                                    _ => {}
+                                    _ => {
+                                        println!("{:?}", event);
+                                    }
                                 }
-                                println!("{:?}", event);
                             }
                         }
                         _ => {
@@ -137,8 +193,7 @@ fn run_tests(args: &[String]) -> Result<(), Box<dyn Error>> {
                             println!("{:?}", event);
                         }
                     }
-                }
-                else if let Some(Value::String(ttype)) = event.get("type") {
+                } else if let Some(Value::String(ttype)) = event.get("type") {
                     match ttype.as_ref() {
                         "suite" => match event.get("event") {
                             Some(Value::String(event_name)) => match event_name.as_ref() {
@@ -209,10 +264,13 @@ fn run_tests(args: &[String]) -> Result<(), Box<dyn Error>> {
                                                 println!("##{}[testFailed name='{}' flowId='{}' message='test failed' details='{}']", brand, name, name, escape_message(stdout.to_string()));
                                             }
 
-                                            println!("##{}[testFinished flowId='{}' name='{}']", brand, name, name);
+                                            println!(
+                                                "##{}[testFinished flowId='{}' name='{}']",
+                                                brand, name, name
+                                            );
                                             //special support for comparison failures expected / actual.
-//                                            find_comparison
-                                            //##teamcity[testFailed t name='ck trace' expected='expected value' actual='actual value']
+                                            //                                            find_comparison
+                                            //##brand[testFailed t name='ck trace' expected='expected value' actual='actual value']
                                             println!("##{}[flowFinished flowId='{}']", brand, name);
                                         }
                                         _ => {
@@ -239,8 +297,18 @@ fn run_tests(args: &[String]) -> Result<(), Box<dyn Error>> {
             }
         }
     }
-    println!("fin");
-    Ok(())
+    //TODO only if file exists?
+    println!(
+        "##{}[publishArtifacts '{}']",
+        brand,
+        std::env::current_dir()
+            .unwrap()
+            .join("cargo-timing.html")
+            .into_os_string()
+            .into_string()
+            .unwrap()
+    );
+    Ok(child.wait()?)
 }
 
 fn escape_message(unescaped: String) -> String {
@@ -267,7 +335,7 @@ fn find_comparison<'msg>(msg: &'msg str) -> Option<(&'msg str, &'msg str)> {
             if let Some(right_index) = msg.find("right: `") {
                 if let Some(right_end) = msg[right_index..].find("`', ") {
                     let right = &msg[(right_index + "right: `".len())..(right_index + right_end)];
-                    return Some((left,right));
+                    return Some((left, right));
                 }
             }
         }
@@ -300,6 +368,8 @@ mod tests {
     fn test_fast() {
         std::thread::sleep(std::time::Duration::new(0, 20));
     }
+
+    //Spec: if we call something that fails we should pass on the error message.
 
     #[test]
     fn test_compare() {
