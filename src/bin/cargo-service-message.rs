@@ -129,10 +129,18 @@ fn run_tests(args: &[String]) -> Result<(), Box<dyn Error>> {
                                             } else {
                                                 ""
                                             };
-                                            println!("##{}[testFailed name='{}' flowId='{}' message='test failed' details='{}']", brand, name, name, escape_message(stdout.to_string()));
+                                            if let Some((left, right)) = find_comparison(stdout) {
+                                                println!("found one!!!");
+                                                println!("##{}[testFailed type='comparisonFailure' name='{}' flowId='{}' message='test failed' details='{}' expected='{}' actual='{}']", brand, name, name, escape_message(stdout.to_string()), 
+                                                escape_message(left.to_string()),escape_message(right.to_string()));
+                                            } else {
+                                                println!("##{}[testFailed name='{}' flowId='{}' message='test failed' details='{}']", brand, name, name, escape_message(stdout.to_string()));
+                                            }
+
                                             println!("##{}[testFinished flowId='{}' name='{}']", brand, name, name);
                                             //special support for comparison failures expected / actual.
-                                            //##teamcity[testFailed type='comparisonFailure' name='MyTest.test2' message='failure message' details='message and stack trace' expected='expected value' actual='actual value']
+//                                            find_comparison
+                                            //##teamcity[testFailed t name='ck trace' expected='expected value' actual='actual value']
                                             println!("##{}[flowFinished flowId='{}']", brand, name);
                                         }
                                         _ => {
@@ -178,6 +186,23 @@ fn contains(needle: &str, args: &[String]) -> bool {
     args.iter().any(|x| x == needle)
 }
 
+fn find_comparison<'msg>(msg: &'msg str) -> Option<(&'msg str, &'msg str)> {
+    if let Some(index) = msg.find("left: `") {
+        if let Some(index_end) = msg[index..].find("`,") {
+            let left_end = index + index_end;
+            let left = &msg[(index + "left: `".len())..left_end];
+
+            if let Some(right_index) = msg.find("right: `") {
+                if let Some(right_end) = msg[right_index..].find("`', ") {
+                    let right = &msg[(right_index + "right: `".len())..(right_index + right_end)];
+                    return Some((left,right));
+                }
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,5 +227,17 @@ mod tests {
     #[test]
     fn test_fast() {
         std::thread::sleep(std::time::Duration::new(0, 20));
+    }
+
+    #[test]
+    fn test_compare() {
+        let output = r#"
+        [tests.test_a_failure_fails] thread 'tests::test_a_failure_fails' panicked at 'assertion failed: `(left == right)`
+  left: `"red"`,
+ right: `"green"`', src/bin/cargo-service-message.rs:194:9
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+        "#;
+
+        assert_eq!(Some(("\"red\"", "\"green\"")), find_comparison(output));
     }
 }
