@@ -1,6 +1,7 @@
 use serde_json::{Deserializer, Value};
 use std::error::Error;
 use std::process::{Command, Stdio};
+use std::collections::HashSet;
 
 fn main() -> Result<(), String> {
     let options: Vec<String> = std::env::args().collect();
@@ -40,6 +41,8 @@ fn cargo_service_message(argv: Vec<String>) -> Result<(), String> {
 */
 
 fn run_tests(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let mut dedupe = HashSet::new();
+
     println!("running");
     let mut cmd = Command::new("cargo");
     cmd.stderr(Stdio::piped());
@@ -61,11 +64,73 @@ fn run_tests(args: &[String]) -> Result<(), Box<dyn Error>> {
 
     let brand = "teamcity";
     let stream = Deserializer::from_reader(child.stdout.unwrap()).into_iter::<Value>();
-
+    let x = String::new();
     for value in stream {
         match value {
             Ok(Value::Object(event)) => {
-                if let Some(Value::String(ttype)) = event.get("type") {
+                if let Some(Value::String(compiler_msg)) = event.get("reason") {
+                    match compiler_msg.as_ref() { 
+                        "compiler-message" => {
+                            if let Some(Value::Object(msg)) = event.get("message") {
+                                match msg.get("level") {
+                                    Some(Value::String(level)) => {
+                                        if level.as_str() == "warning" {
+                                            let message = if let Some(Value::String(message)) = msg.get("rendered") {
+                                                
+                                                message.to_string()
+                                            } else {"".to_string()};
+
+                                            if message.len() > 0 {
+                                                // Rust has a habbit of giving you the same error message twice.
+                                                // Let's cut that out here.
+                                                if dedupe.contains(&message) {
+                                                    continue;
+                                                }
+                                                dedupe.insert(message.clone());
+                                            }
+
+                                            if let Some(Value::Object(code)) = msg.get("code") {
+                                                let explanation = if let Some(Value::String(explanation)) = code.get("explanation") {
+                                                    explanation.to_string()
+                                                } else { "no explanation".to_string() };
+                                                
+                                                let code = if let Some(Value::String(code)) = code.get("code") {
+                                                    code.to_string()
+                                                } else { "other".to_string() };
+                                                
+                                                let mut file = "";
+                                                let mut line = 0u64;
+                                                if let Some(Value::Array(spans)) = msg.get("spans") {
+                                                    if let Value::Object(span) = &spans[0] {
+                                                        if let Some(Value::String(file_name)) = span.get("file_name")
+                                                        {
+                                                            file = &file_name;
+                                                        }
+                                                        if let Some(Value::Number(line_number)) = span.get("line_start")
+                                                        {
+                                                            line = line_number.as_u64().unwrap_or(0);
+                                                        }
+                                                    }
+                                                }
+                                             
+                                                println!("##teamcity[inspectionType id='{}' category='warning' name='{}' description='{}']", code, code, explanation);
+                                                println!("##{}[inspection typeId='{}' message='{}' file='{}' line='{}' SEVERITY='{}']", brand, code, escape_message(message), file, line, level);
+                                                //additional attribute='<additional attribute>'
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                                println!("{:?}", event);
+                            }
+                        }
+                        _ => {
+                            println!("{}", compiler_msg);
+                            println!("{:?}", event);
+                        }
+                    }
+                }
+                else if let Some(Value::String(ttype)) = event.get("type") {
                     match ttype.as_ref() {
                         "suite" => match event.get("event") {
                             Some(Value::String(event_name)) => match event_name.as_ref() {
@@ -130,7 +195,6 @@ fn run_tests(args: &[String]) -> Result<(), Box<dyn Error>> {
                                                 ""
                                             };
                                             if let Some((left, right)) = find_comparison(stdout) {
-                                                println!("found one!!!");
                                                 println!("##{}[testFailed type='comparisonFailure' name='{}' flowId='{}' message='test failed' details='{}' expected='{}' actual='{}']", brand, name, name, escape_message(stdout.to_string()), 
                                                 escape_message(left.to_string()),escape_message(right.to_string()));
                                             } else {
