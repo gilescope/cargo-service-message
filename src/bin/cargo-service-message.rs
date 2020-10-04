@@ -18,10 +18,10 @@ fn cargo_service_message(argv: Vec<String>) -> Result<(), String> {
         return Err(format!("expected 'service-message' as the next argument followed by the standard cargo test arguments but got {}", argv[1]));
         //eyre!("swoops"));
     }
-    if argv[2] != *"test" {
-        return Err(format!("expected 'test' as the next argument followed by the standard cargo test arguments but got {}", argv[2]));
-        //eyre!("swoops"));
-    }
+    // if argv[2] != *"test" {
+    //     return Err(format!("expected 'test' as the next argument followed by the standard cargo test arguments but got {}", argv[2]));
+    //     //eyre!("swoops"));
+    // }
 
     run_tests(&argv[2..]).unwrap();
     Ok(())
@@ -49,16 +49,21 @@ fn run_tests(args: &[String]) -> Result<(), Box<dyn Error>> {
     cmd.stdout(Stdio::piped());
     cmd.args(args);
 
+    let cargo_cmd = args[0].clone(); //TODO support +nightly
+
     cmd.arg("--message-format=json"); //TODO this needs to be before --
 
     if !contains("--", args) {
         cmd.arg("--");
     }
-    if !contains("-Zunstable-options", args) && !contains("unstable-options", args) {
-        cmd.arg("-Zunstable-options");
+
+    if cargo_cmd == "test" {
+        if !contains("-Zunstable-options", args) && !contains("unstable-options", args) {
+            cmd.arg("-Zunstable-options");
+        }
+        cmd.arg("--format");
+        cmd.arg("json");
     }
-    cmd.arg("--format");
-    cmd.arg("json");
     println!("spawning: {:?}", &cmd);
     let child = cmd.spawn()?;
 
@@ -88,6 +93,9 @@ fn run_tests(args: &[String]) -> Result<(), Box<dyn Error>> {
                                                 }
                                                 dedupe.insert(message.clone());
                                             }
+                                            //TODO ask jetbrains if there's a way we can embed html here as message could
+                                            // do with being monospaced.
+//                                            let message = "<pre>".to_string() + &message + "</pre>";
 
                                             if let Some(Value::Object(code)) = msg.get("code") {
                                                 let explanation = if let Some(Value::String(explanation)) = code.get("explanation") {
@@ -137,19 +145,19 @@ fn run_tests(args: &[String]) -> Result<(), Box<dyn Error>> {
                                 "started" => {
                                     println!(
                                         "##{}[testSuiteStarted name='{}' flowId='{}']",
-                                        brand, "a_test_suite_name", "test_suite_flow_id"
+                                        brand, "rust_test_suite", "test_suite_flow_id"
                                     );
                                 }
                                 "ok" => {
                                     println!(
                                         "##{}[testSuiteFinished name='{}' flowId='{}']",
-                                        brand, "a_test_suite_name", "test_suite_flow_id"
+                                        brand, "rust_test_suite", "test_suite_flow_id"
                                     );
                                 }
                                 "failed" => {
                                     println!(
                                         "##{}[testSuiteFinished name='{}' flowId='{}']",
-                                        brand, "a_test_suite_name", "test_suite_flow_id"
+                                        brand, "rust_test_suite", "test_suite_flow_id"
                                     );
                                 }
                                 _ => {

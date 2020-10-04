@@ -16,6 +16,20 @@ cargo install cargo-service-message --git https://github.com/gilescope/cargo-ser
 
 Licenced as Apache 2.0 or MIT at your choice.
 
+## How to use it?
+
+put it in after cargo but use the same commands as cargo. If you have a command line that doesn't work then raise an issue.
+
+These are example commands that seem to work so far:
+
+```sh
+cargo service-message test --all-targets
+```
+
+```sh
+cargo service-message clippy
+```
+
 
 ## Tracking Issues:
 
