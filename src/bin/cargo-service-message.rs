@@ -6,19 +6,20 @@ use std::process::{Command, ExitStatus, Stdio};
 fn main() -> Result<(), String> {
     let options: Vec<String> = std::env::args().collect();
     println!("{:?}", &options);
-    if let Ok(exist_status) = cargo_service_message(options) {
-        if let Some(exit_code) = exist_status.code() {
-            std::process::exit(exit_code);
-        } else {
-            // signal killed process
-            std::process::exit(-2);
-        }
+    if let Ok(exit_code) = cargo_service_message(options) {
+        std::process::exit(exit_code);
+        // if let Some(exit_code) = exist_status.code() {
+            
+        // } else {
+        //     // signal killed process
+        //     std::process::exit(-2);
+        // }
     } else {
         std::process::exit(-1);
     }
 }
 
-fn cargo_service_message(argv: Vec<String>) -> Result<ExitStatus, String> {
+fn cargo_service_message(argv: Vec<String>) -> Result<i32, String> {
     if argv.len() < 2 {
         return Err(format!("Usage: 'test' as the next argument followed by the standard cargo test arguments. Found {:?}", argv));
     }
@@ -43,7 +44,7 @@ fn cargo_service_message(argv: Vec<String>) -> Result<ExitStatus, String> {
 { "type": "suite", "event": "ok", "passed": 3, "failed": 0, "allowed_fail": 0, "ignored": 0, "measured": 0, "filtered_out": 0 }
 */
 
-fn run_tests(args: &[String]) -> Result<ExitStatus, Box<dyn Error>> {
+fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
     let debug = false;
     let brand = "teamcity";
     let min_threshhold = 5.; // Any stat below 2 seconds would be noisy anyhow.
@@ -333,7 +334,27 @@ fn run_tests(args: &[String]) -> Result<ExitStatus, Box<dyn Error>> {
             .into_string()
             .unwrap()
     );
-    Ok(child.wait()?)
+
+    Ok(child.wait()?).map(|exit_status|
+        if let Some(exit_code) = exit_status.code() {
+            if cargo_cmd == "clippy" {
+                0
+            } else {
+                exit_code
+            }
+        } else {
+            -1
+        }
+    )
+
+    // if cargo_cmd == "clippy" {
+    //     Ok(ExitStatus::)
+    // } else
+    // {
+    //     if let Some(exit_code) = result.code() {
+
+    //     }
+    // }
 }
 
 fn escape_message(unescaped: String) -> String {

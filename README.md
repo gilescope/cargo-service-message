@@ -29,7 +29,6 @@ cargo service-message clippy
 For compiles it will add in cargo-timings.html to the artifacts. I can't configure the report tab to display it for you - but on the plus side you can do that from the root project for all projects in the instance.
 
 TODO:
-   * Statistics seem to graph fine on the build results / parameters page, but not on the stats graphs page so something's not quite right with them...
    * Coverage
    * Refactor code to not be one large function :-)
 
