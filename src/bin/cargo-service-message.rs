@@ -109,10 +109,31 @@ fn run_tests(args: &[String]) -> Result<ExitStatus, Box<dyn Error>> {
                                             "##{}[buildStatisticValue key='{} {}' value='{:.6}']",
                                             brand, mode, name, duration
                                         );
+
+                                        println!("Compiled {} in {:.2}s", name, duration);
                                     }
                                 }
                             }
                         }
+                        "build-script-executed" => {
+                            if let Some(Value::String(package_id)) = event.get("package_id")
+                            {
+                                // Shame build scripts that run:
+                                println!("Running build script for {}", tidy_package_id(package_id));
+                            }
+                        },
+                        "compiler-artifact" => {
+                            let fresh = if let Some(Value::Bool(fresh)) = event.get("fresh") {
+                                *fresh
+                            } else {
+                                false
+                            };
+                            if let Some(Value::String(package_id)) = event.get("package_id")
+                            {
+                                // Shame build scripts that run:
+                                println!("Compiling {} {}", tidy_package_id(package_id), if fresh { "[fresh]" } else { "" });
+                            }
+                        },
                         "compiler-message" => {
                             if let Some(Value::Object(msg)) = event.get("message") {
                                 match msg.get("level") {
@@ -176,6 +197,8 @@ fn run_tests(args: &[String]) -> Result<ExitStatus, Box<dyn Error>> {
                                                     }
                                                 }
 
+                                                println!("{}", message);
+
                                                 println!("##{}[inspectionType id='{}' category='warning' name='{}' description='{}']", brand,code, code, explanation);
                                                 println!("##{}[inspection typeId='{}' message='{}' file='{}' line='{}' SEVERITY='{}']", brand, code, escape_message(message), file, line, level);
                                                 //additional attribute='<additional attribute>'
@@ -187,7 +210,9 @@ fn run_tests(args: &[String]) -> Result<ExitStatus, Box<dyn Error>> {
                                     }
                                 }
                             }
-                        }
+                        },
+                        "build-finished"=> {
+                        },
                         _ => {
                             println!("{}", compiler_msg);
                             println!("{:?}", event);
@@ -320,6 +345,11 @@ fn escape_message(unescaped: String) -> String {
         .replace("\n", "|n")
         .replace("\r", "|r")
         .replace("'", "|'")
+}
+
+fn tidy_package_id(package_id: &str) -> String {
+    package_id.replace("(registry+https://github.com/rust-lang/crates.io-index)", "")
+    .replace("(registry+https://github.com/rust-lang/crates.io-index.git)", "")
 }
 
 fn contains(needle: &str, args: &[String]) -> bool {
