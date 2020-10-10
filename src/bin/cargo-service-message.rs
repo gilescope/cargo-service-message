@@ -1,19 +1,15 @@
+#![feature(test)]
+extern crate test;
+
 use serde_json::{Deserializer, Value};
-use std::collections::HashSet;
 use std::error::Error;
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{Command, Stdio};
 
 fn main() -> Result<(), String> {
     let options: Vec<String> = std::env::args().collect();
     println!("{:?}", &options);
     if let Ok(exit_code) = cargo_service_message(options) {
         std::process::exit(exit_code);
-        // if let Some(exit_code) = exist_status.code() {
-            
-        // } else {
-        //     // signal killed process
-        //     std::process::exit(-2);
-        // }
     } else {
         std::process::exit(-1);
     }
@@ -39,17 +35,19 @@ fn cargo_service_message(argv: Vec<String>) -> Result<i32, String> {
 { "type": "test", "event": "ok", "name": "tests::test", "exec_time": "0.000s" }
 { "type": "test", "event": "ok", name": "tests::test_fast", "exec_time": "0.000s" }
 { "type": "test", "event": "ok", "name": "tests::test_slow", "exec_time": "10.000s" }
-
+{ "type": "bench", "name": "tests::example_bench_add_two", "median": 57, "deviation": 9 }
 { "type": "suite", "event": "started", "test_count": 3 }
+{"event": "ignored", "name": "tests::test_a_failure_fails", "type": "test"}
 { "type": "suite", "event": "ok", "passed": 3, "failed": 0, "allowed_fail": 0, "ignored": 0, "measured": 0, "filtered_out": 0 }
 */
 
 fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
-    let debug = false;
-    let brand = "teamcity";
-    let min_threshhold = 5.; // Any stat below 2 seconds would be noisy anyhow.
-
-    let mut dedupe: HashSet<String> = HashSet::new();
+    //Params:
+    let debug = std::env::var("SERVICE_FLAGS").is_ok();
+    let colors = false; //TODO wait for teamcity inspections to understand ansi
+                        //Also TODO: replace ansi yellow => orange as yellow on white unreadable!
+    let brand = std::env::var("SERVICE_BRAND").unwrap_or("teamcity".to_owned());
+    let min_threshhold = 5.; // Any crate that compiles faster than this many seconds won't be tracked.
 
     let mut cmd = Command::new("cargo");
     cmd.stderr(Stdio::piped());
@@ -61,7 +59,14 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
     //Even though cargo clean doesn't do json at the moment it would be good if
     // adding service-message was a no_op.
     if cargo_cmd != "clean" {
-        cmd.arg("--message-format=json"); //TODO this needs to be before --
+        cmd.arg(format!(
+            "--message-format={}",
+            if colors {
+                "json-diagnostic-rendered-ansi"
+            } else {
+                "json"
+            }
+        )); //TODO this needs to be before --
         cmd.arg("-Ztimings=json,html,info");
     }
 
@@ -69,7 +74,7 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
         cmd.arg("--");
     }
 
-    if cargo_cmd == "test" {
+    if cargo_cmd == "test" || cargo_cmd == "bench" {
         if !contains("-Zunstable-options", args) && !contains("unstable-options", args) {
             cmd.arg("-Zunstable-options");
         }
@@ -83,6 +88,7 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
     let stream = Deserializer::from_reader(out_stream).into_iter::<Value>();
     let x = String::new();
     for value in stream {
+        //  println!("{:?}", &value);
         match value {
             Ok(Value::Object(event)) => {
                 if let Some(Value::String(compiler_msg)) = event.get("reason") {
@@ -105,7 +111,7 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
 
                             if let Some(Value::Number(duration)) = event.get("duration") {
                                 if let Some(duration) = duration.as_f64() {
-                                    if (duration > min_threshhold) {
+                                    if duration > min_threshhold {
                                         println!(
                                             "##{}[buildStatisticValue key='{} {}' value='{:.6}']",
                                             brand, mode, name, duration
@@ -117,24 +123,29 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
                             }
                         }
                         "build-script-executed" => {
-                            if let Some(Value::String(package_id)) = event.get("package_id")
-                            {
+                            if let Some(Value::String(package_id)) = event.get("package_id") {
                                 // Shame build scripts that run:
-                                println!("Running build script for {}", tidy_package_id(package_id));
+                                println!(
+                                    "Running build script for {}",
+                                    tidy_package_id(package_id)
+                                );
                             }
-                        },
+                        }
                         "compiler-artifact" => {
                             let fresh = if let Some(Value::Bool(fresh)) = event.get("fresh") {
                                 *fresh
                             } else {
                                 false
                             };
-                            if let Some(Value::String(package_id)) = event.get("package_id")
-                            {
+                            if let Some(Value::String(package_id)) = event.get("package_id") {
                                 // Shame build scripts that run:
-                                println!("Compiling {} {}", tidy_package_id(package_id), if fresh { "[fresh]" } else { "" });
+                                println!(
+                                    "Compiling {} {}",
+                                    tidy_package_id(package_id),
+                                    if fresh { "[fresh]" } else { "" }
+                                );
                             }
-                        },
+                        }
                         "compiler-message" => {
                             if let Some(Value::Object(msg)) = event.get("message") {
                                 match msg.get("level") {
@@ -149,17 +160,9 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
                                                 "".to_string()
                                             };
 
-                                            if message.len() > 0 {
-                                                // Rust has a habbit of giving you the same error message twice.
-                                                // Let's cut that out here.
-                                                if dedupe.contains(&message) {
-                                                    continue;
-                                                }
-                                                dedupe.insert(message.clone());
-                                            }
                                             //TODO ask jetbrains if there's a way we can embed html here as message could
                                             // do with being monospaced.
-                                            //                                            let message = "<pre>".to_string() + &message + "</pre>";
+                                            // let message = "<pre>".to_string() + &message + "</pre>";
 
                                             if let Some(Value::Object(code)) = msg.get("code") {
                                                 let explanation =
@@ -211,9 +214,8 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
                                     }
                                 }
                             }
-                        },
-                        "build-finished"=> {
-                        },
+                        }
+                        "build-finished" => {}
                         _ => {
                             println!("{}", compiler_msg);
                             println!("{:?}", event);
@@ -249,8 +251,31 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
                                 println!("format {:?}", event);
                             }
                         },
+                        "bench" => {
+                            let name = if let Some(Value::String(name)) = event.get("name") {
+                                name
+                            } else {
+                                "no_name"
+                            };
+                            let name = name.replace("::", ".").to_string();
+
+                            if let Some(Value::Number(median)) = event.get("median") {
+                                println!(
+                                    "##{}[buildStatisticValue key='bench.{}.median' value='{:.6}']",
+                                    brand,
+                                    name,
+                                    median.as_f64().unwrap()
+                                );
+                            }
+                            if let Some(Value::Number(devation)) = event.get("deviation") {
+                                println!(
+                                    "##{}[buildStatisticValue key='bench.{}.deviation' value='{:.6}']",
+                                    brand, name, devation
+                                );
+                            }
+                        }
                         "test" => {
-                            let name = if let Value::String(name) = event.get("name").unwrap() {
+                            let name = if let Some(Value::String(name)) = event.get("name") {
                                 name
                             } else {
                                 "no_name"
@@ -275,9 +300,12 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
                                             }
                                             println!("##{}[flowFinished flowId='{}']", brand, name);
                                         }
+                                        "ignored" => {
+                                            //todo maybe don't ignore the ignored tests?
+                                        }
                                         "failed" => {
-                                            let stdout = if let Value::String(stdout) =
-                                                event.get("stdout").unwrap()
+                                            let stdout = if let Some(Value::String(stdout)) =
+                                                event.get("stdout")
                                             {
                                                 stdout
                                             } else {
@@ -335,8 +363,11 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
             .unwrap()
     );
 
-    Ok(child.wait()?).map(|exit_status|
+    Ok(child.wait()?).map(|exit_status| {
         if let Some(exit_code) = exit_status.code() {
+            // Clippy fails the build if there's violations.
+            // better to have it return 0 and let people have
+            // a TeamCity rule to fail if > 0 inspections.
             if cargo_cmd == "clippy" {
                 0
             } else {
@@ -345,16 +376,7 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
         } else {
             -1
         }
-    )
-
-    // if cargo_cmd == "clippy" {
-    //     Ok(ExitStatus::)
-    // } else
-    // {
-    //     if let Some(exit_code) = result.code() {
-
-    //     }
-    // }
+    })
 }
 
 fn escape_message(unescaped: String) -> String {
@@ -369,8 +391,15 @@ fn escape_message(unescaped: String) -> String {
 }
 
 fn tidy_package_id(package_id: &str) -> String {
-    package_id.replace("(registry+https://github.com/rust-lang/crates.io-index)", "")
-    .replace("(registry+https://github.com/rust-lang/crates.io-index.git)", "")
+    package_id
+        .replace(
+            "(registry+https://github.com/rust-lang/crates.io-index)",
+            "",
+        )
+        .replace(
+            "(registry+https://github.com/rust-lang/crates.io-index.git)",
+            "",
+        )
 }
 
 fn contains(needle: &str, args: &[String]) -> bool {
@@ -397,6 +426,14 @@ fn find_comparison<'msg>(msg: &'msg str) -> Option<(&'msg str, &'msg str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test::Bencher;
+
+    #[bench]
+    fn example_bench_add_two(b: &mut Bencher) {
+        b.iter(|| {
+            print!("hi");
+        });
+    }
 
     #[test]
     fn test() {

@@ -1,5 +1,6 @@
 # cargo-service-message
-Provides (test) service messages for Cargo for integration into CI systems like TeamCity
+
+Provides (test) service messages for Cargo for integration into CI systems like TeamCity.
 
 ## How to install it?
 
@@ -18,19 +19,28 @@ If you have a command line that doesn't work then please raise an issue.
 
 These are example commands that seem to work so far:
 
-```sh
-cargo service-message test --all-targets
-```
+## What's supported out of the box:
 
-```sh
-cargo service-message clippy
-```
+   * cargo service-message test (test results appear in the TeamCity UI as they happen)
+   * cargo service-message bench (stats logged so TeamCity can graph them)
+   * cargo service-message clippy (violations appear as inspections)
+   * cargo service-message build (warnings appear as inspections)
+   * cargo service-message check
+   * cargo service-message rustc
+   * cargo service-message clean (We don't fail but we don't value add here either)
 
-For compiles it will add in cargo-timings.html to the artifacts. I can't configure the report tab to display it for you - but on the plus side you can do that from the root project for all projects in the instance.
+For compiles it will add in cargo-timings.html to the artifacts. I can't configure the report tab to display it for you - you can do that from the root project for all projects in the instance and if the report is there it will add the tab.
 
-TODO:
-   * Coverage
+## Todo list:
+   * Coverage (I hear there's new source level coverage coming to rust?)
    * Refactor code to not be one large function :-)
+
+## Teamcity Todo list:
+
+Hi Jetbrains, here are the things that would make Teamcity + Rust even more awesome:
+
+   [ ] Use monospaced font in inspections.
+   [ ] Interpret ansi escape codes in inspections as happens in the teamcity build log.
 
 ## Licence:
 
