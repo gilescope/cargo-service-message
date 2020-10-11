@@ -1,7 +1,7 @@
 #![feature(test)]
 extern crate test;
 
-use serde_json::{Deserializer, Value};
+use serde_json::{Deserializer, Map, Value};
 use std::error::Error;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
@@ -49,7 +49,7 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
     let colors = false; //TODO wait for teamcity inspections to understand ansi
                         //Also TODO: replace ansi yellow => orange as yellow on white unreadable!
     let brand = std::env::var("SERVICE_BRAND").unwrap_or_else(|_| "teamcity".to_owned());
-    let min_threshhold = 5.; // Any crate that compiles faster than this many seconds won't be tracked.
+    let min_threshold = 5.; // Any crate that compiles faster than this many seconds won't be tracked.
 
     let mut cmd = Command::new("cargo");
     cmd.stderr(Stdio::inherit());
@@ -105,286 +105,14 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
                 //  println!("{:?}", &value);
                 match value {
                     Ok(Value::Object(event)) => {
-                        if let Some(Value::String(compiler_msg)) = event.get("reason") {
-                            match compiler_msg.as_ref() {
-                                "timing-info" => {
-                                    if debug {
-                                        println!();
-                                        println!("{:?}", &event);
-                                    }
-                                    let mut name = "anon".to_string();
-                                    if let Some(Value::Object(target)) = event.get("target") {
-                                        if let Some(Value::String(target_name)) = target.get("name")
-                                        {
-                                            name = target_name.to_string()
-                                        }
-                                    }
-                                    let mut mode = "mode".to_string();
-                                    if let Some(Value::String(compile_mode)) = event.get("mode") {
-                                        mode = compile_mode.to_string();
-                                    }
-
-                                    if let Some(Value::Number(duration)) = event.get("duration") {
-                                        if let Some(duration) = duration.as_f64() {
-                                            if duration > min_threshhold {
-                                                println!(
-                                                "##{}[buildStatisticValue key='{} {}' value='{:.6}']",
-                                                brand, mode, name, duration
-                                            );
-
-                                                println!("Compiled {} in {:.2}s", name, duration);
-                                            }
-                                        }
-                                    }
-                                }
-                                "build-script-executed" => {
-                                    if let Some(Value::String(package_id)) = event.get("package_id")
-                                    {
-                                        // Shame build scripts that run:
-                                        println!(
-                                            "Running build script for {}",
-                                            tidy_package_id(package_id)
-                                        );
-                                    }
-                                }
-                                "compiler-artifact" => {
-                                    let fresh = if let Some(Value::Bool(fresh)) = event.get("fresh")
-                                    {
-                                        *fresh
-                                    } else {
-                                        false
-                                    };
-                                    if let Some(Value::String(package_id)) = event.get("package_id")
-                                    {
-                                        // Shame build scripts that run:
-                                        println!(
-                                            "Compiling {} {}",
-                                            tidy_package_id(package_id),
-                                            if fresh { "[fresh]" } else { "" }
-                                        );
-                                    }
-                                }
-                                "compiler-message" => {
-                                    if let Some(Value::Object(msg)) = event.get("message") {
-                                        match msg.get("level") {
-                                            Some(Value::String(level)) => {
-                                                if level.as_str() == "warning"
-                                                    || level.as_str() == "error"
-                                                {
-                                                    let message =
-                                                        if let Some(Value::String(message)) =
-                                                            msg.get("rendered")
-                                                        {
-                                                            message.to_string()
-                                                        } else {
-                                                            "".to_string()
-                                                        };
-
-                                                    //TODO ask jetbrains if there's a way we can embed html here as message could
-                                                    // do with being monospaced.
-                                                    // let message = "<pre>".to_string() + &message + "</pre>";
-
-                                                    if let Some(Value::Object(code)) =
-                                                        msg.get("code")
-                                                    {
-                                                        let explanation = if let Some(
-                                                            Value::String(explanation),
-                                                        ) =
-                                                            code.get("explanation")
-                                                        {
-                                                            explanation.to_string()
-                                                        } else {
-                                                            "no explanation".to_string()
-                                                        };
-
-                                                        let code =
-                                                            if let Some(Value::String(code)) =
-                                                                code.get("code")
-                                                            {
-                                                                code.to_string()
-                                                            } else {
-                                                                "other".to_string()
-                                                            };
-
-                                                        let mut file = "";
-                                                        let mut line = 0u64;
-                                                        if let Some(Value::Array(spans)) =
-                                                            msg.get("spans")
-                                                        {
-                                                            if let Value::Object(span) = &spans[0] {
-                                                                if let Some(Value::String(
-                                                                    file_name,
-                                                                )) = span.get("file_name")
-                                                                {
-                                                                    file = &file_name;
-                                                                }
-                                                                if let Some(Value::Number(
-                                                                    line_number,
-                                                                )) = span.get("line_start")
-                                                                {
-                                                                    line = line_number
-                                                                        .as_u64()
-                                                                        .unwrap_or(0);
-                                                                }
-                                                            }
-                                                        }
-
-                                                        println!("{}", message);
-                                                        inspection_logged = true;
-                                                        println!("##{}[inspectionType id='{}' category='warning' name='{}' description='{}']", brand,code, code, explanation);
-                                                        println!("##{}[inspection typeId='{}' message='{}' file='{}' line='{}' SEVERITY='{}']", brand, code, escape_message(message), file, line, level);
-                                                        //additional attribute='<additional attribute>'
-                                                    }
-                                                }
-                                            }
-                                            _ => {
-                                                println!("{:?}", event);
-                                            }
-                                        }
-                                    }
-                                }
-                                "build-finished" => {}
-                                _ => {
-                                    println!("{}", compiler_msg);
-                                    println!("{:?}", event);
-                                }
-                            }
-                        } else if let Some(Value::String(ttype)) = event.get("type") {
-                            match ttype.as_ref() {
-                                "suite" => match event.get("event") {
-                                    Some(Value::String(event_name)) => match event_name.as_ref() {
-                                        "started" => {
-                                            println!(
-                                            "##{}[testSuiteStarted name='rust_test_suite' flowId='test_suite_flow_id']",
-                                            brand
-                                        );
-                                        }
-                                        "ok" => {
-                                            println!(
-                                            "##{}[testSuiteFinished name='rust_test_suite' flowId='test_suite_flow_id']",
-                                            brand,
-                                        );
-                                        }
-                                        "failed" => {
-                                            inspection_logged = true;
-                                            println!(
-                                            "##{}[testSuiteFinished name='rust_test_suite' flowId='test_suite_flow_id']",
-                                            brand,
-                                        );
-                                        }
-                                        _ => {
-                                            println!("format unknown {:?}", event);
-                                        }
-                                    },
-                                    _ => {
-                                        println!("format {:?}", event);
-                                    }
-                                },
-                                "bench" => {
-                                    let name = if let Some(Value::String(name)) = event.get("name")
-                                    {
-                                        name
-                                    } else {
-                                        "no_name"
-                                    };
-                                    let name = name.replace("::", ".").to_string();
-
-                                    if let Some(Value::Number(median)) = event.get("median") {
-                                        println!(
-                                        "##{}[buildStatisticValue key='bench.{}.median' value='{:.6}']",
-                                        brand,
-                                        name,
-                                        median.as_f64().unwrap()
-                                    );
-                                    }
-                                    if let Some(Value::Number(devation)) = event.get("deviation") {
-                                        println!(
-                                        "##{}[buildStatisticValue key='bench.{}.deviation' value='{:.6}']",
-                                        brand, name, devation
-                                    );
-                                    }
-                                }
-                                "test" => {
-                                    let name = if let Some(Value::String(name)) = event.get("name")
-                                    {
-                                        name
-                                    } else {
-                                        "no_name"
-                                    };
-                                    let name = name.replace("::", ".").to_string();
-
-                                    match event.get("event") {
-                                        Some(Value::String(s)) => {
-                                            match s.as_ref() {
-                                                "started" => {
-                                                    println!("##{}[flowStarted flowId='{}' parent='test_suite_flow_id']", brand, name);
-                                                    println!("##{}[testStarted flowId='{}' name='{}' captureStandardOutput='true' parent='test_suite_flow_id']", brand, name, name);
-                                                }
-                                                "ok" => {
-                                                    if let Some(exec_time) = event.get("exec_time")
-                                                    {
-                                                        println!("##{}[testFinished flowId='{}' name='{}' duration='{}']", brand, name, name, exec_time);
-                                                    } else {
-                                                        println!(
-                                                        "##{}[testFinished flowId='{}' name='{}']",
-                                                        brand, name, name
-                                                    );
-                                                    }
-                                                    println!(
-                                                        "##{}[flowFinished flowId='{}']",
-                                                        brand, name
-                                                    );
-                                                }
-                                                "ignored" => {
-                                                    //todo maybe don't ignore the ignored tests?
-                                                }
-                                                "failed" => {
-                                                    inspection_logged = true;
-                                                    let stdout =
-                                                        if let Some(Value::String(stdout)) =
-                                                            event.get("stdout")
-                                                        {
-                                                            stdout
-                                                        } else {
-                                                            ""
-                                                        };
-                                                    if let Some((left, right)) =
-                                                        find_comparison(stdout)
-                                                    {
-                                                        println!("##{}[testFailed type='comparisonFailure' name='{}' flowId='{}' message='test failed' details='{}' expected='{}' actual='{}']", brand, name, name, escape_message(stdout.to_string()), 
-                                                    escape_message(left.to_string()),escape_message(right.to_string()));
-                                                    } else {
-                                                        println!("##{}[testFailed name='{}' flowId='{}' message='test failed' details='{}']", brand, name, name, escape_message(stdout.to_string()));
-                                                    }
-
-                                                    println!(
-                                                        "##{}[testFinished flowId='{}' name='{}']",
-                                                        brand, name, name
-                                                    );
-                                                    //special support for comparison failures expected / actual.
-                                                    //                                            find_comparison
-                                                    //##brand[testFailed t name='ck trace' expected='expected value' actual='actual value']
-                                                    println!(
-                                                        "##{}[flowFinished flowId='{}']",
-                                                        brand, name
-                                                    );
-                                                }
-                                                _ => {
-                                                    println!("failed to parse {:?}", event);
-                                                }
-                                            }
-                                        }
-                                        _ => {
-                                            println!(
-                                                "unhandled event - please report: {:?}",
-                                                event
-                                            );
-                                        }
-                                    }
-                                }
-                                _ => {
-                                    println!("unhandled event - please report: {:?}", event);
-                                }
+                        let ctx = Context {
+                            debug,
+                            brand: brand.to_string(),
+                            min_threshold,
+                        };
+                        if let Ok(reported) = process(&event, &ctx) {
+                            if reported {
+                                inspection_logged = true;
                             }
                         }
                     }
@@ -428,7 +156,291 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
     })
 }
 
-fn escape_message(unescaped: String) -> String {
+struct Context {
+    debug: bool,
+    brand: String,
+    min_threshold: f64,
+}
+
+///Returns true if inspection was rasied.
+fn process(event: &Map<String, Value>, ctx: &Context) -> Result<bool, Box<dyn Error>> {
+    let brand = &ctx.brand;
+    let mut inspection_logged = false;
+    if let Some(Value::String(compiler_msg)) = event.get("reason") {
+        match compiler_msg.as_ref() {
+            "timing-info" => {
+                parse_timing_info(ctx, event);
+            }
+            "build-script-executed" => {
+                if let Some(Value::String(package_id)) = event.get("package_id") {
+                    // Shame build scripts that run:
+                    println!("Running build script for {}", tidy_package_id(package_id));
+                }
+            }
+            "compiler-artifact" => {
+                let fresh = if let Some(Value::Bool(fresh)) = event.get("fresh") {
+                    *fresh
+                } else {
+                    false
+                };
+                if let Some(Value::String(package_id)) = event.get("package_id") {
+                    // Shame build scripts that run:
+                    println!(
+                        "Compiling {} {}",
+                        tidy_package_id(package_id),
+                        if fresh { "[fresh]" } else { "" }
+                    );
+                }
+            }
+            "compiler-message" => {
+                if let Some(Value::Object(msg)) = event.get("message") {
+                    if let Ok(true) = parse_compiler_message(ctx, msg) {
+                        inspection_logged = true;
+                    }
+                }
+            }
+            "build-finished" => {}
+            _ => {
+                println!("{}", compiler_msg);
+                println!("{:?}", event);
+            }
+        }
+    } else if let Some(Value::String(ttype)) = event.get("type") {
+        match ttype.as_ref() {
+            "suite" => match event.get("event") {
+                Some(Value::String(event_name)) => match event_name.as_ref() {
+                    "started" => {
+                        println!("##{}[testSuiteStarted name='rust_test_suite' flowId='test_suite_flow_id']", brand);
+                    }
+                    "ok" => {
+                        println!("##{}[testSuiteFinished name='rust_test_suite' flowId='test_suite_flow_id']", brand);
+                    }
+                    "failed" => {
+                        inspection_logged = true;
+                        println!("##{}[testSuiteFinished name='rust_test_suite' flowId='test_suite_flow_id']", brand);
+                    }
+                    _ => {
+                        println!("format unknown {:?}", event);
+                    }
+                },
+                _ => {
+                    println!("format {:?}", event);
+                }
+            },
+            "bench" => {
+                let name = parse_name(&event);
+
+                if let Some(Value::Number(median)) = event.get("median") {
+                    println!(
+                        "##{}[buildStatisticValue key='bench.{}.median' value='{:.6}']",
+                        brand,
+                        name,
+                        median.as_f64().unwrap()
+                    );
+                }
+                if let Some(Value::Number(devation)) = event.get("deviation") {
+                    println!(
+                        "##{}[buildStatisticValue key='bench.{}.deviation' value='{:.6}']",
+                        brand, name, devation
+                    );
+                }
+            }
+            "test" => match event.get("event") {
+                Some(Value::String(s)) => {
+                    return parse_test_event(ctx, s, event);
+                }
+                _ => {
+                    println!("unhandled event - please report: {:?}", event);
+                }
+            },
+            _ => {
+                println!("unhandled event - please report: {:?}", event);
+            }
+        }
+    }
+    Ok(inspection_logged)
+}
+
+fn parse_compiler_message(ctx: &Context, msg: &Map<String, Value>) -> Result<bool, Box<dyn Error>> {
+    if let Some(Value::String(level)) = msg.get("level") {
+        if level.as_str() == "warning" || level.as_str() == "error" {
+            let message = if let Some(Value::String(message)) = msg.get("rendered") {
+                message.as_ref()
+            } else {
+                ""
+            };
+
+            //TODO ask jetbrains if there's a way we can embed html here as message could
+            // do with being monospaced.
+            // let message = "<pre>".to_string() + &message + "</pre>";
+
+            if let Some(Value::Object(code)) = msg.get("code") {
+                let explanation = if let Some(Value::String(explanation)) = code.get("explanation")
+                {
+                    explanation.as_ref()
+                } else {
+                    "no explanation"
+                };
+
+                let code = if let Some(Value::String(code)) = code.get("code") {
+                    code.as_ref()
+                } else {
+                    "other"
+                };
+
+                let mut file = "";
+                let mut line = 0u64;
+                if let Some(Value::Array(spans)) = msg.get("spans") {
+                    if let Value::Object(span) = &spans[0] {
+                        if let Some(Value::String(file_name)) = span.get("file_name") {
+                            file = &file_name;
+                        }
+                        if let Some(Value::Number(line_number)) = span.get("line_start") {
+                            line = line_number.as_u64().unwrap_or(0);
+                        }
+                    }
+                }
+
+                println!("{}", message);
+                println!(
+                    "##{}[inspectionType id='{}' category='warning' name='{}' description='{}']",
+                    ctx.brand, code, code, explanation
+                );
+                println!(
+                    "##{}[inspection typeId='{}' message='{}' file='{}' line='{}' SEVERITY='{}']",
+                    ctx.brand,
+                    code,
+                    escape_message(message),
+                    file,
+                    line,
+                    level
+                );
+                //additional attribute='<additional attribute>'
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        } else {
+            Ok(false)
+        }
+    } else {
+        println!("{:?}", msg);
+        Ok(false)
+    }
+}
+
+fn parse_test_event(
+    ctx: &Context,
+    event_type: &str,
+    event: &Map<String, Value>,
+) -> Result<bool, Box<dyn Error>> {
+    //TODO split parsing from output!
+    let name = parse_name(&event);
+
+    match event_type {
+        "started" => {
+            println!(
+                "##{}[flowStarted flowId='{}' parent='test_suite_flow_id']",
+                ctx.brand, name
+            );
+            println!("##{}[testStarted flowId='{}' name='{}' captureStandardOutput='true' parent='test_suite_flow_id']", ctx.brand, name, name);
+            Ok(false)
+        }
+        "ok" => {
+            if let Some(exec_time) = event.get("exec_time") {
+                println!(
+                    "##{}[testFinished flowId='{}' name='{}' duration='{}']",
+                    ctx.brand, name, name, exec_time
+                );
+            } else {
+                println!(
+                    "##{}[testFinished flowId='{}' name='{}']",
+                    ctx.brand, name, name
+                );
+            }
+            println!("##{}[flowFinished flowId='{}']", ctx.brand, name);
+            Ok(false)
+        }
+        "ignored" => {
+            //todo maybe don't ignore the ignored tests?
+            Ok(false)
+        }
+        "failed" => {
+            let stdout = if let Some(Value::String(stdout)) = event.get("stdout") {
+                stdout
+            } else {
+                ""
+            };
+            if let Some((left, right)) = find_comparison(stdout) {
+                println!("##{}[testFailed type='comparisonFailure' name='{}' flowId='{}' message='test failed' details='{}' expected='{}' actual='{}']", ctx.brand, name, name, escape_message(stdout),
+                escape_message(left),escape_message(right));
+            } else {
+                println!(
+                    "##{}[testFailed name='{}' flowId='{}' message='test failed' details='{}']",
+                    ctx.brand,
+                    name,
+                    name,
+                    escape_message(stdout)
+                );
+            }
+
+            println!(
+                "##{}[testFinished flowId='{}' name='{}']",
+                ctx.brand, name, name
+            );
+            println!("##{}[flowFinished flowId='{}']", ctx.brand, name);
+            Ok(true)
+        }
+        _ => {
+            println!("failed to parse {:?}", event);
+            Ok(false)
+        }
+    }
+}
+
+fn parse_timing_info(ctx: &Context, event: &Map<String, Value>) {
+    if ctx.debug {
+        println!("{:?}", &event);
+    }
+    let name = if let Some(Value::Object(target)) = event.get("target") {
+        if let Some(Value::String(target_name)) = target.get("name") {
+            target_name.to_string()
+        } else {
+            "anon".to_string()
+        }
+    } else {
+        "anon".to_string()
+    };
+
+    let mode = if let Some(Value::String(compile_mode)) = event.get("mode") {
+        compile_mode.to_string()
+    } else {
+        "mode".to_string()
+    };
+
+    if let Some(Value::Number(duration)) = event.get("duration") {
+        if let Some(duration) = duration.as_f64() {
+            if duration > ctx.min_threshold {
+                println!(
+                    "##{}[buildStatisticValue key='{} {}' value='{:.6}']",
+                    ctx.brand, mode, name, duration
+                );
+
+                println!("Compiled {} in {:.2}s", name, duration);
+            }
+        }
+    }
+}
+fn parse_name(event: &Map<String, Value>) -> String {
+    let name = if let Some(Value::String(name)) = event.get("name") {
+        name
+    } else {
+        "no_name"
+    };
+    name.replace("::", ".")
+}
+
+fn escape_message(unescaped: &str) -> String {
     //TODO:\uNNNN (unicode symbol with code 0xNNNN)  as |0xNNNN
     unescaped
         .replace("|", "||")
