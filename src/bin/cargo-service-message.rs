@@ -1,5 +1,6 @@
-#![feature(test)]
-extern crate test;
+//Not stable:
+// #![feature(test)]
+// extern crate test;
 
 use serde_json::{Deserializer, Map, Value};
 use std::error::Error;
@@ -56,7 +57,7 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
     cmd.stdout(Stdio::piped());
     cmd.args(args);
 
-    let cargo_cmd = args[0].clone(); //TODO support +nightly
+    let cargo_cmd = &args[0]; //TODO support +nightly
 
     //Even though cargo clean doesn't do json at the moment it would be good if
     // adding service-message was a no_op.
@@ -483,12 +484,13 @@ mod tests {
     use super::*;
     use test::Bencher;
 
-    #[bench]
-    fn example_bench_add_two(b: &mut Bencher) {
-        b.iter(|| {
-            print!("hi");
-        });
-    }
+    //Bench not stable:
+    // #[bench]
+    // fn example_bench_add_two(b: &mut Bencher) {
+    //     b.iter(|| {
+    //         print!("hi");
+    //     });
+    // }
 
     #[test]
     fn test() {
