@@ -27,7 +27,8 @@ These are example commands that seem to work so far:
    * cargo service-message build (warnings appear as inspections)
    * cargo service-message check
    * cargo service-message rustc
-   * cargo service-message clean (We don't fail but we don't value add here either)
+   * cargo service-message clean (no-op passthrough)
+   * cargo service-message fmt (no-op passthrough)
 
 For compiles it will add in cargo-timings.html to the artifacts. I can't configure the report tab to display it for you - you can do that from the root project for all projects in the instance and if the report is there it will add the tab.
 

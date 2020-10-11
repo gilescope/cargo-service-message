@@ -59,7 +59,7 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
 
     //Even though cargo clean doesn't do json at the moment it would be good if
     // adding service-message was a no_op.
-    if cargo_cmd != "clean" {
+    if cargo_cmd != "clean" && cargo_cmd != "fmt" {
         cmd.arg(format!(
             "--message-format={}",
             if colors {
@@ -92,9 +92,10 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
 
     println!("spawning: {:?}", &cmd);
     let mut child = cmd.spawn()?;
-
+    use serde_json::StreamDeserializer;
+    use std::io::BufReader;
     let out_stream = Option::take(&mut child.stdout).unwrap();
-    let stream = Deserializer::from_reader(out_stream).into_iter::<Value>();
+    let stream : StreamDeserializer<_,_> = Deserializer::from_reader(BufReader::new(out_stream)).into_iter::<Value>();
     let x = String::new();
     let mut inspection_logged = false;
     for value in stream {
@@ -359,6 +360,7 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
                 println!("error parsing cargo output");
             }
             Err(err) => {
+//                let parsed_upto = stream.byte_offset();
                 println!("can't parse cargo output as json: {} (continuing)", err);
             }
         }
