@@ -44,13 +44,14 @@ fn cargo_service_message(argv: Vec<String>) -> Result<i32, String> {
 fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
     //Params:
     let debug = std::env::var("SERVICE_FLAGS").is_ok();
+    let coverage = true;
     let colors = false; //TODO wait for teamcity inspections to understand ansi
                         //Also TODO: replace ansi yellow => orange as yellow on white unreadable!
-    let brand = std::env::var("SERVICE_BRAND").unwrap_or("teamcity".to_owned());
+    let brand = std::env::var("SERVICE_BRAND").unwrap_or_else(|_|"teamcity".to_owned());
     let min_threshhold = 5.; // Any crate that compiles faster than this many seconds won't be tracked.
 
     let mut cmd = Command::new("cargo");
-    cmd.stderr(Stdio::piped());
+    cmd.stderr(Stdio::inherit());
     cmd.stdout(Stdio::piped());
     cmd.args(args);
 
@@ -81,12 +82,21 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
         cmd.arg("--format");
         cmd.arg("json");
     }
+    if coverage && (cargo_cmd == "test" || cargo_cmd == "build") {
+        //         export CARGO_INCREMENTAL=0
+        // export RUSTFLAGS="-Zprofile -Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off -Zpanic_abort_tests -Cpanic=abort"
+        // export RUSTDOCFLAGS="-Cpanic=abort"
+        //cmd.arg("-Zinstrument-coverage");
+        //-Zexperimental-coverage for branch level coverage but a little inaccurate at the moment.
+    }
+
     println!("spawning: {:?}", &cmd);
     let mut child = cmd.spawn()?;
 
     let out_stream = Option::take(&mut child.stdout).unwrap();
     let stream = Deserializer::from_reader(out_stream).into_iter::<Value>();
     let x = String::new();
+    let mut inspection_logged = false;
     for value in stream {
         //  println!("{:?}", &value);
         match value {
@@ -95,7 +105,7 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
                     match compiler_msg.as_ref() {
                         "timing-info" => {
                             if debug {
-                                println!("");
+                                println!();
                                 println!("{:?}", &event);
                             }
                             let mut name = "anon".to_string();
@@ -202,7 +212,7 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
                                                 }
 
                                                 println!("{}", message);
-
+                                                inspection_logged = true;
                                                 println!("##{}[inspectionType id='{}' category='warning' name='{}' description='{}']", brand,code, code, explanation);
                                                 println!("##{}[inspection typeId='{}' message='{}' file='{}' line='{}' SEVERITY='{}']", brand, code, escape_message(message), file, line, level);
                                                 //additional attribute='<additional attribute>'
@@ -227,20 +237,21 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
                             Some(Value::String(event_name)) => match event_name.as_ref() {
                                 "started" => {
                                     println!(
-                                        "##{}[testSuiteStarted name='{}' flowId='{}']",
-                                        brand, "rust_test_suite", "test_suite_flow_id"
+                                        "##{}[testSuiteStarted name='rust_test_suite' flowId='test_suite_flow_id']",
+                                        brand
                                     );
                                 }
                                 "ok" => {
                                     println!(
-                                        "##{}[testSuiteFinished name='{}' flowId='{}']",
-                                        brand, "rust_test_suite", "test_suite_flow_id"
+                                        "##{}[testSuiteFinished name='rust_test_suite' flowId='test_suite_flow_id']",
+                                        brand,
                                     );
                                 }
                                 "failed" => {
+                                    inspection_logged = true;
                                     println!(
-                                        "##{}[testSuiteFinished name='{}' flowId='{}']",
-                                        brand, "rust_test_suite", "test_suite_flow_id"
+                                        "##{}[testSuiteFinished name='rust_test_suite' flowId='test_suite_flow_id']",
+                                        brand,
                                     );
                                 }
                                 _ => {
@@ -304,6 +315,7 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
                                             //todo maybe don't ignore the ignored tests?
                                         }
                                         "failed" => {
+                                            inspection_logged = true;
                                             let stdout = if let Some(Value::String(stdout)) =
                                                 event.get("stdout")
                                             {
@@ -333,12 +345,12 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
                                     }
                                 }
                                 _ => {
-                                    println!("format {:?}", event);
+                                    println!("unhandled event - please report: {:?}", event);
                                 }
                             }
                         }
                         _ => {
-                            println!("format {:?}", event);
+                            println!("unhandled event - please report: {:?}", event);
                         }
                     }
                 }
@@ -347,7 +359,7 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
                 println!("error parsing cargo output");
             }
             Err(err) => {
-                println!("error parsing cargo output: {} (continuing)", err);
+                println!("can't parse cargo output as json: {} (continuing)", err);
             }
         }
     }
@@ -365,10 +377,10 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
 
     Ok(child.wait()?).map(|exit_status| {
         if let Some(exit_code) = exit_status.code() {
-            // Clippy fails the build if there's violations.
-            // better to have it return 0 and let people have
+            // Tests and Clippy fail the build with non-zero exit codes if there's failures.
+            // Better to have it return success and let people have
             // a TeamCity rule to fail if > 0 inspections.
-            if cargo_cmd == "clippy" {
+            if inspection_logged && (cargo_cmd == "clippy" || cargo_cmd == "test") {
                 0
             } else {
                 exit_code
@@ -406,7 +418,7 @@ fn contains(needle: &str, args: &[String]) -> bool {
     args.iter().any(|x| x == needle)
 }
 
-fn find_comparison<'msg>(msg: &'msg str) -> Option<(&'msg str, &'msg str)> {
+fn find_comparison(msg: &str) -> Option<(&str, &str)> {
     if let Some(index) = msg.find("left: `") {
         if let Some(index_end) = msg[index..].find("`,") {
             let left_end = index + index_end;
