@@ -95,21 +95,18 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
     let mut child = cmd.spawn()?;
     let out_stream = Option::take(&mut child.stdout).unwrap();
     let buf = BufReader::new(out_stream);
-    let x = String::new();
     let mut inspection_logged = false;
-
+    let ctx = Context {
+        debug,
+        brand: brand.to_string(),
+        min_threshold,
+    };
     for line in buf.lines() {
         if let Ok(ref line) = line {
             let stream = Deserializer::from_str(&line);
             for value in stream.into_iter() {
-                //  println!("{:?}", &value);
                 match value {
                     Ok(Value::Object(event)) => {
-                        let ctx = Context {
-                            debug,
-                            brand: brand.to_string(),
-                            min_threshold,
-                        };
                         if let Ok(reported) = process(&event, &ctx) {
                             if reported {
                                 inspection_logged = true;
@@ -265,7 +262,7 @@ fn parse_compiler_message(ctx: &Context, msg: &Map<String, Value>) -> Result<boo
     if let Some(Value::String(level)) = msg.get("level") {
         if level.as_str() == "warning" || level.as_str() == "error" {
             let message = if let Some(Value::String(message)) = msg.get("rendered") {
-                message.as_ref()
+                message
             } else {
                 ""
             };
@@ -277,13 +274,13 @@ fn parse_compiler_message(ctx: &Context, msg: &Map<String, Value>) -> Result<boo
             if let Some(Value::Object(code)) = msg.get("code") {
                 let explanation = if let Some(Value::String(explanation)) = code.get("explanation")
                 {
-                    explanation.as_ref()
+                    explanation
                 } else {
                     "no explanation"
                 };
 
                 let code = if let Some(Value::String(code)) = code.get("code") {
-                    code.as_ref()
+                    code
                 } else {
                     "other"
                 };
@@ -404,18 +401,18 @@ fn parse_timing_info(ctx: &Context, event: &Map<String, Value>) {
     }
     let name = if let Some(Value::Object(target)) = event.get("target") {
         if let Some(Value::String(target_name)) = target.get("name") {
-            target_name.to_string()
+            target_name
         } else {
-            "anon".to_string()
+            "anon"
         }
     } else {
-        "anon".to_string()
+        "anon"
     };
 
     let mode = if let Some(Value::String(compile_mode)) = event.get("mode") {
-        compile_mode.to_string()
+        compile_mode
     } else {
-        "mode".to_string()
+        "mode"
     };
 
     if let Some(Value::Number(duration)) = event.get("duration") {
@@ -468,17 +465,14 @@ fn contains(needle: &str, args: &[String]) -> bool {
 }
 
 fn find_comparison(msg: &str) -> Option<(&str, &str)> {
-    if let Some(index) = msg.find("left: `") {
-        if let Some(index_end) = msg[index..].find("`,") {
-            let left_end = index + index_end;
-            let left = &msg[(index + "left: `".len())..left_end];
-
-            if let Some(right_index) = msg.find("right: `") {
-                if let Some(right_end) = msg[right_index..].find("`', ") {
-                    let right = &msg[(right_index + "right: `".len())..(right_index + right_end)];
-                    return Some((left, right));
-                }
-            }
+    if let (Some(left_index), Some(right_index)) = (msg.find("left: `"), msg.find("right: `")) {
+        if let (Some(left_end), Some(right_end)) = (
+            msg[left_index..].find("`,"),
+            msg[right_index..].find("`', "),
+        ) {
+            let left = &msg[(left_index + "left: `".len())..(left_index + left_end)];
+            let right = &msg[(right_index + "right: `".len())..(right_index + right_end)];
+            return Some((left, right));
         }
     }
     None
