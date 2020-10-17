@@ -33,8 +33,9 @@ These are example commands that seem to work so far:
 For compiles it will add in cargo-timings.html to the artifacts. I can't configure the report tab to display it for you - you can do that from the root project for all projects in the instance and if the report is there it will add the tab.
 
 ## Todo list:
-   * Coverage (I hear there's new source level coverage coming to rust?)
-   * Refactor code to not be one large function :-)
+   [ ] Coverage (I hear there's accurate branch level coverage coming to rust soon)
+   [ ] Write some tests once coverage is automatic.
+   [ ] If the subcommand causes problems, we could read from stdin E.g. `cargo test --message-format=json | cargo-service-message`
 
 ## Teamcity Todo list:
 

@@ -45,8 +45,12 @@ fn cargo_service_message(argv: Vec<String>) -> Result<i32, String> {
 
 fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
     //Params:
-    let debug = std::env::var("SERVICE_FLAGS").is_ok();
-    let coverage = true;
+    let debug = std::env::var("SERVICE_FLAGS")
+        .unwrap_or("".into())
+        .contains("--debug");
+    let coverage = std::env::var("SERVICE_FLAGS")
+        .unwrap_or("".into())
+        .contains("--cover");
     let colors = false; //TODO wait for teamcity inspections to understand ansi
                         //Also TODO: replace ansi yellow => orange as yellow on white unreadable!
     let brand = std::env::var("SERVICE_BRAND").unwrap_or_else(|_| "teamcity".to_owned());
@@ -84,12 +88,13 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
         cmd.arg("--format");
         cmd.arg("json");
     }
+
     if coverage && (cargo_cmd == "test" || cargo_cmd == "build") {
-        //         export CARGO_INCREMENTAL=0
-        // export RUSTFLAGS="-Zprofile -Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off -Zpanic_abort_tests -Cpanic=abort"
-        // export RUSTDOCFLAGS="-Cpanic=abort"
-        //cmd.arg("-Zinstrument-coverage");
-        //-Zexperimental-coverage for branch level coverage but a little inaccurate at the moment.
+        //TOOD: add to RUSTFLAGS if already set and check to see if flag already in there.
+        //-Zexperimental-coverage
+        cmd.env("CARGO_INCREMENTAL", "0");
+        cmd.env("RUSTFLAGS", "-Zinstrument-coverage -Zprofile -Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off -Zpanic_abort_tests -Cpanic=abort");
+        cmd.env("RUSTDOCFLAGS", "-Cpanic=abort");
     }
 
     println!("spawning: {:?}", &cmd);
@@ -272,7 +277,7 @@ fn parse_compiler_message(ctx: &Context, msg: &Map<String, Value>) -> Result<boo
             // do with being monospaced.
             // let message = "<pre>".to_string() + &message + "</pre>";
 
-            if let Some(Value::Object(code)) = msg.get("code") {
+            let (code, explanation) = if let Some(Value::Object(code)) = msg.get("code") {
                 let explanation = if let Some(Value::String(explanation)) = code.get("explanation")
                 {
                     explanation
@@ -280,15 +285,19 @@ fn parse_compiler_message(ctx: &Context, msg: &Map<String, Value>) -> Result<boo
                     "no explanation"
                 };
 
-                let code = if let Some(Value::String(code)) = code.get("code") {
-                    code
+                if let Some(Value::String(code)) = code.get("code") {
+                    (code.as_ref(), explanation)
                 } else {
-                    "other"
-                };
+                    ("other", explanation)
+                }
+            } else {
+                ("other", "no explanation")
+            };
 
-                let mut file = "";
-                let mut line = 0u64;
-                if let Some(Value::Array(spans)) = msg.get("spans") {
+            let mut file = "no_file";
+            let mut line = 0u64;
+            if let Some(Value::Array(spans)) = msg.get("spans") {
+                if !spans.is_empty() {
                     if let Value::Object(span) = &spans[0] {
                         if let Some(Value::String(file_name)) = span.get("file_name") {
                             file = &file_name;
@@ -298,11 +307,20 @@ fn parse_compiler_message(ctx: &Context, msg: &Map<String, Value>) -> Result<boo
                         }
                     }
                 }
+            }
 
-                println!("{}", message);
+            if level == "error" {
                 println!(
-                    "##{}[inspectionType id='{}' category='warning' name='{}' description='{}']",
-                    ctx.brand, code, code, explanation
+                    "##{}[buildProblem description='{}' identity='{}']",
+                    ctx.brand,
+                    escape_message(message),
+                    code
+                );
+                eprintln!("{}", message);
+            } else {
+                println!(
+                    "##{}[inspectionType id='{}' category='{}' name='{}' description='{}']",
+                    ctx.brand, code, level, code, explanation
                 );
                 println!(
                     "##{}[inspection typeId='{}' message='{}' file='{}' line='{}' SEVERITY='{}']",
@@ -313,12 +331,17 @@ fn parse_compiler_message(ctx: &Context, msg: &Map<String, Value>) -> Result<boo
                     line,
                     level
                 );
-                //additional attribute='<additional attribute>'
-                Ok(true)
-            } else {
-                Ok(false)
+                println!("{}", message);
             }
+
+            //additional attribute='<additional attribute>'
+            Ok(true)
+        // } else {
+        //     println!("unhandled msg: {:?}", msg);
+        //     Ok(false)
+        // }
         } else {
+            println!("unhandled message: {:?}", msg);
             Ok(false)
         }
     } else {
@@ -482,7 +505,7 @@ fn find_comparison(msg: &str) -> Option<(&str, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use test::Bencher;
+    //use test::Bencher;
 
     //Bench not stable:
     // #[bench]
