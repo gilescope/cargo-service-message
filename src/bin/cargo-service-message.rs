@@ -209,16 +209,50 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
             .arg("-s")
             .arg(".")
             .arg("-t")
+            .arg("covdir")
+            .arg("--llvm")
+            .arg("--branch")
+            .arg("--ignore-not-existing")
+            .arg("-o")
+            .arg("./target/coverage.json");
+        grcov.output().ok();
+
+        let coverage =
+            std::fs::read_to_string("./target/coverage.json").expect("coverage.json file to exist");
+
+        let (percent, lcov, _lmiss, ltot) = parse_cov(&coverage);
+
+        println!(
+            "##{}[buildStatisticValue key='CodeCoverageL' value='{:.6}']",
+            brand, percent
+        );
+        println!(
+            "##{}[buildStatisticValue key='CodeCoverageAbsLCovered' value='{:.6}']",
+            brand, lcov
+        );
+        println!(
+            "##{}[buildStatisticValue key='CodeCoverageAbsLTotal' value='{:.6}']",
+            brand, ltot
+        );
+
+        let mut grcov = Command::new("grcov");
+        grcov
+            .arg(format!("./target/{}/", mode))
+            .arg("-s")
+            .arg(".")
+            .arg("-t")
             .arg("html")
             .arg("--llvm")
             .arg("--branch")
             .arg("--ignore-not-existing")
             .arg("-o")
             .arg("./target/coverage/");
+        println!("{:?}", grcov);
         let out = grcov.output();
 
         if let Err(err) = out {
             eprintln!("grcov error while processing coverage: {}", err);
+        //println!(out.stdout);
         } else {
             //An attempt to override the css file...
             //std::thread::sleep(Duration::new(1, 0));
@@ -241,7 +275,7 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
             // f.drop();
 
             println!(
-                "##{}[publishArtifacts '{}/**=>coverage.zip']",
+                "##{}[publishArtifacts '{}**=>coverage.zip']",
                 brand,
                 std::env::current_dir()
                     .unwrap()
@@ -609,6 +643,39 @@ fn find_comparison(msg: &str) -> Option<(&str, &str)> {
     None
 }
 
+fn parse_cov(cov: &str) -> (f64, u64, u64, u64) {
+    let stream = Deserializer::from_str(&cov);
+    for value in stream.into_iter() {
+        match value {
+            Ok(Value::Object(map)) => {
+                let percent = if let Some(Value::Number(num)) = map.get("coveragePercent") {
+                    num.as_f64().unwrap_or(0.)
+                } else {
+                    0.
+                };
+                let lcov = if let Some(Value::Number(num)) = map.get("linesCovered") {
+                    num.as_i64().unwrap_or(0) as u64
+                } else {
+                    0
+                };
+                let lmiss = if let Some(Value::Number(num)) = map.get("linesMissed") {
+                    num.as_i64().unwrap_or(0) as u64
+                } else {
+                    0
+                };
+                let ltot = if let Some(Value::Number(num)) = map.get("linesTotal") {
+                    num.as_i64().unwrap_or(0) as u64
+                } else {
+                    0
+                };
+                return (percent, lcov, lmiss, ltot);
+            }
+            _ => {}
+        }
+    }
+    (0., 0, 0, 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -657,5 +724,25 @@ note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
         "#;
 
         assert_eq!(Some(("\"red\"", "\"green\"")), find_comparison(output));
+    }
+
+    #[test]
+    fn parse_coverage() {
+        let cov = r#"
+        {
+            "children": {
+            },
+            "coveragePercent": 8.86,
+            "linesCovered": 1067,
+            "linesMissed": 10975,
+            "linesTotal": 12042,
+            "name": ""
+        }
+        "#;
+        let (percent, lcov, lmiss, ltot) = parse_cov(cov);
+        assert_eq!(percent, 8.86);
+        assert_eq!(lcov, 1067);
+        assert_eq!(lmiss, 10975);
+        assert_eq!(ltot, 12042);
     }
 }
