@@ -290,7 +290,7 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
     result
 }
 
-static CSS: &str = include_str!("grcov.css");
+//static CSS: &str = include_str!("grcov.css");
 
 struct Context {
     debug: bool,
