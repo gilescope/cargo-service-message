@@ -2,11 +2,18 @@
 
 Provides (test) service messages for Cargo for integration into CI systems like TeamCity.
 
+(See also https://github.com/JetBrains/teamcity-rust-plugin if you are allowed to add plugins to your TeamCity instance)
+
 ## How to install it?
 
 For now you can install it like this:
 ```sh
 cargo install cargo-service-message --git https://github.com/gilescope/cargo-service-message.git
+```
+
+If you want coverage also install grcov:
+```
+cargo install grcov
 ```
 
 ## How to use it?
@@ -62,6 +69,8 @@ Hi Jetbrains, here are the things that would make Teamcity + Rust even more awes
 Licenced as Apache 2.0 or MIT at your choice.
 
 ## Tracking Issues:
+
+https://github.com/rust-lang/rust/pull/77890
 
 https://github.com/rust-lang/rust/issues/49359
 

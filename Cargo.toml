@@ -1,6 +1,6 @@
 [package]
 name = "cargo-service-message"
-version = "0.1.3"
+version = "0.1.4"
 authors = ["Giles Cope <gilescope@gmail.com>"]
 edition = "2018"
 
