@@ -75,17 +75,19 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
 
     let cargo_cmd = &args[0]; //TODO: support +nightly
 
-    if coverage {
+    if coverage && cargo_cmd == "test" {
         if let Err(_) = Command::new("grcov").arg("--version").output() {
             coverage = false;
             println!("cargo-service-message: grcov not found on path so no coverage. (cargo install grcov?)");
-        }
-
-        if cargo_cmd != "test" {
-            coverage = false;
         } else {
+            println!("testing with coverage...");
             let _clean_done = Command::new("cargo").arg("clean").status();
         }
+    } else if cargo_cmd == "test" {
+        println!("testing without coverage (set SERVICE_MESSAGE=--cover for coverage)");
+    }
+    if coverage && cargo_cmd != "test" {
+        coverage = false;
     }
 
     let colors = false; //TODO: wait for teamcity inspections to understand ansi
@@ -363,6 +365,11 @@ fn process(event: &Map<String, Value>, ctx: &Context) -> Result<bool, Box<dyn Er
 
 fn parse_compiler_message(ctx: &Context, msg: &Map<String, Value>) -> Result<bool, Box<dyn Error>> {
     if let Some(Value::String(level)) = msg.get("level") {
+        let level = if level.as_str() == "error: internal compiler error" {
+            "error".to_string()
+        } else {
+            level.to_string()
+        };
         if level.as_str() == "warning" || level.as_str() == "error" {
             let message = if let Some(Value::String(message)) = msg.get("rendered") {
                 message
@@ -415,19 +422,22 @@ fn parse_compiler_message(ctx: &Context, msg: &Map<String, Value>) -> Result<boo
                 );
                 eprintln!("{}", message);
             } else {
-                println!(
-                    "##{}[inspectionType id='{}' category='{}' name='{}' description='{}']",
-                    ctx.brand, code, level, code, explanation
-                );
-                println!(
-                    "##{}[inspection typeId='{}' message='{}' file='{}' line='{}' SEVERITY='{}']",
-                    ctx.brand,
-                    code,
-                    escape_message(message),
-                    file,
-                    line,
-                    level
-                );
+                if !message.contains("1 warning emitted") && !message.contains(" warnings emitted")
+                {
+                    println!(
+                        "##{}[inspectionType id='{}' category='{}' name='{}' description='{}']",
+                        ctx.brand, code, level, code, explanation
+                    );
+                    println!(
+                        "##{}[inspection typeId='{}' message='{}' file='{}' line='{}' SEVERITY='{}']",
+                        ctx.brand,
+                        code,
+                        escape_message(message),
+                        file,
+                        line,
+                        level
+                    );
+                }
                 println!("{}", message);
             }
 
@@ -518,7 +528,7 @@ fn parse_test_event(
 
 fn parse_timing_info(ctx: &Context, event: &Map<String, Value>) {
     if ctx.debug {
-        println!("{:?}", &event);
+        println!("{:#?}", &event);
     }
     let name = if let Some(Value::Object(target)) = event.get("target") {
         if let Some(Value::String(target_name)) = target.get("name") {
