@@ -32,9 +32,15 @@ These are example commands that seem to work so far:
 
 For compiles it will add in cargo-timings.html to the artifacts. I can't configure the report tab to display it for you - you can do that from the root project for all projects in the instance and if the report is there it will add the tab.
 
+set env SERVICE_MESSAGE="--cover" for coverage to be generate.
+
+set env SERVICE_MESSAGE="--debug" for debug messages.
+
 ## Todo list:
-   [ ] Coverage (I hear there's accurate branch level coverage coming to rust soon)
-   [ ] Write some tests once coverage is automatic.
+   [ ] Style coverage results so they don't look dreadful.
+
+   [ ] Write some tests now coverage is automatic.
+
    [ ] If the subcommand causes problems, we could read from stdin E.g. `cargo test --message-format=json | cargo-service-message`
 
 ## Teamcity Todo list:
@@ -42,7 +48,14 @@ For compiles it will add in cargo-timings.html to the artifacts. I can't configu
 Hi Jetbrains, here are the things that would make Teamcity + Rust even more awesome:
 
    [ ] Use monospaced font in inspections.
+
    [ ] Interpret ansi escape codes in inspections as happens in the teamcity build log.
+
+## Help Wanted:
+
+   [ ] TeamCity playtesters required - try it on your teamcity instance and give us feedback!
+
+   [ ] Hackers required - help make the crate production ready and able to do the right thing in as many circumstances as possible.
 
 ## Licence:
 

@@ -6,10 +6,31 @@ use serde_json::{Deserializer, Map, Value};
 use std::error::Error;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use std::thread;
+use std::time::Duration;
 
 fn main() -> Result<(), String> {
+    //Setup interrupt handling (TODO: not sure this is actually responding to teamcity stop events?)
+    thread::spawn(|| {
+        let running = Arc::new(AtomicBool::new(true));
+        let r = running.clone();
+        ctrlc::set_handler(move || {
+            r.store(false, Ordering::SeqCst);
+        })
+        .expect("Error setting Ctrl-C handler");
+        while running.load(Ordering::SeqCst) {
+            thread::sleep(Duration::new(0, 500));
+        }
+        std::process::exit(-1);
+    });
+
     let options: Vec<String> = std::env::args().collect();
     println!("{:?}", &options);
+
     if let Ok(exit_code) = cargo_service_message(options) {
         std::process::exit(exit_code);
     } else {
@@ -45,23 +66,37 @@ fn cargo_service_message(argv: Vec<String>) -> Result<i32, String> {
 
 fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
     //Params:
-    let debug = std::env::var("SERVICE_FLAGS")
+    let debug = std::env::var("SERVICE_MESSAGE")
         .unwrap_or("".into())
         .contains("--debug");
-    let coverage = std::env::var("SERVICE_FLAGS")
+    let mut coverage = std::env::var("SERVICE_MESSAGE")
         .unwrap_or("".into())
         .contains("--cover");
-    let colors = false; //TODO wait for teamcity inspections to understand ansi
-                        //Also TODO: replace ansi yellow => orange as yellow on white unreadable!
+
+    let cargo_cmd = &args[0]; //TODO: support +nightly
+
+    if coverage {
+        if let Err(_) = Command::new("grcov").arg("--version").output() {
+            coverage = false;
+            println!("cargo-service-message: grcov not found on path so no coverage. (cargo install grcov?)");
+        }
+
+        if cargo_cmd != "test" {
+            coverage = false;
+        } else {
+            let _clean_done = Command::new("cargo").arg("clean").status();
+        }
+    }
+
+    let colors = false; //TODO: wait for teamcity inspections to understand ansi
+                        //Also TODO: replace ansi yellow => orange as yellow on white unreadable unless in darkmode!
     let brand = std::env::var("SERVICE_BRAND").unwrap_or_else(|_| "teamcity".to_owned());
-    let min_threshold = 5.; // Any crate that compiles faster than this many seconds won't be tracked.
+    let min_threshold = 5.; // Any crate that compiles faster than this many seconds won't be tracked via statistics.
 
     let mut cmd = Command::new("cargo");
     cmd.stderr(Stdio::inherit());
     cmd.stdout(Stdio::piped());
     cmd.args(args);
-
-    let cargo_cmd = &args[0]; //TODO support +nightly
 
     //Even though cargo clean doesn't do json at the moment it would be good if
     // adding service-message was a no_op.
@@ -73,9 +108,15 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
             } else {
                 "json"
             }
-        )); //TODO this needs to be before --
+        )); //TODO: this needs to be before --
         cmd.arg("-Ztimings=json,html,info");
     }
+
+    let mode = if contains("--release", args) {
+        "release"
+    } else {
+        "debug"
+    };
 
     if !contains("--", args) {
         cmd.arg("--");
@@ -143,7 +184,7 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
             .unwrap()
     );
 
-    Ok(child.wait()?).map(|exit_status| {
+    let result = Ok(child.wait()?).map(|exit_status| {
         if let Some(exit_code) = exit_status.code() {
             // Tests and Clippy fail the build with non-zero exit codes if there's failures.
             // Better to have it return success and let people have
@@ -156,8 +197,64 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
         } else {
             -1
         }
-    })
+    });
+
+    if coverage {
+        let mut grcov = Command::new("grcov");
+        //TODO: support CARGO_TARGET_DIR!
+        grcov
+            .arg(format!("./target/{}/", mode))
+            .arg("-s")
+            .arg(".")
+            .arg("-t")
+            .arg("html")
+            .arg("--llvm")
+            .arg("--branch")
+            .arg("--ignore-not-existing")
+            .arg("-o")
+            .arg("./target/coverage/");
+        let out = grcov.output();
+
+        if let Err(err) = out {
+            eprintln!("grcov error while processing coverage: {}", err);
+        } else {
+            //An attempt to override the css file...
+            //std::thread::sleep(Duration::new(1, 0));
+            // use std::fs::File;
+            // use std::io::Write;
+            // let file_name = std::env::current_dir()
+            //     .unwrap()
+            //     .join("target/coverage/grcov.css");
+            // println!("going to {:?}", &file_name);
+
+            // if let Err(rr) = std::fs::remove_file(&file_name) {
+            //     eprintln!("Error {:?}", rr);
+            // }
+            // println!("did {:?}", &file_name);
+            // println!("{}", CSS);
+            // {
+            //     let mut f = File::create(file_name).expect("Unable to create file");
+            //     f.write_all(CSS.as_bytes()).expect("Unable to write data");
+            // }
+            // f.drop();
+
+            println!(
+                "##{}[publishArtifacts '{}/**=>coverage.zip']",
+                brand,
+                std::env::current_dir()
+                    .unwrap()
+                    .join("target/coverage/")
+                    .into_os_string()
+                    .into_string()
+                    .unwrap()
+            );
+        }
+    }
+
+    result
 }
+
+static CSS: &str = include_str!("grcov.css");
 
 struct Context {
     debug: bool,
@@ -433,7 +530,7 @@ fn parse_timing_info(ctx: &Context, event: &Map<String, Value>) {
         "anon"
     };
 
-    let mode = if let Some(Value::String(compile_mode)) = event.get("mode") {
+    let compile_mode = if let Some(Value::String(compile_mode)) = event.get("mode") {
         compile_mode
     } else {
         "mode"
@@ -444,7 +541,7 @@ fn parse_timing_info(ctx: &Context, event: &Map<String, Value>) {
             if duration > ctx.min_threshold {
                 println!(
                     "##{}[buildStatisticValue key='{} {}' value='{:.6}']",
-                    ctx.brand, mode, name, duration
+                    ctx.brand, compile_mode, name, duration
                 );
 
                 println!("Compiled {} in {:.2}s", name, duration);
@@ -505,6 +602,7 @@ fn find_comparison(msg: &str) -> Option<(&str, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    //(Benche isn't stable still!)
     //use test::Bencher;
 
     //Bench not stable:
