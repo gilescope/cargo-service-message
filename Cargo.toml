@@ -3,6 +3,13 @@ name = "cargo-service-message"
 version = "0.1.4"
 authors = ["Giles Cope <gilescope@gmail.com>"]
 edition = "2018"
+description = "Seamless integration of cargo with TeamCity"
+repository = "https://github.com/gilescope/cargo-service-message.git"
+license = "MIT OR Apache-2.0"
+keywords = ["ci", "teamcity"]
+categories = ["development-tools::cargo-plugins", "development-tools::testing", "development-tools::profiling"]
+default-run = "cargo-service-message"
+maintenance = { status = "experimental" }
 
 [lib]
 name="service_message"
