@@ -174,6 +174,9 @@ fn run_cargo(args: &[String]) -> Result<i32, Box<dyn Error>> {
 
     for line in buf.lines() {
         if let Ok(ref line) = line {
+            if ctx.debug {
+                println!("{}", &line);
+            }
             let stream = Deserializer::from_str(&line);
             for value in stream.into_iter() {
                 match value {
@@ -320,7 +323,6 @@ fn run_cargo(args: &[String]) -> Result<i32, Box<dyn Error>> {
             );
         }
     }
-
     result
 }
 
@@ -375,12 +377,7 @@ fn process(
             }
             "compiler-message" => {
                 if let Some(Value::Object(msg)) = event.get("message") {
-                    if let Ok(true) = parse_compiler_message(
-                        ctx,
-                        msg,
-                        &mut std::io::stdout(),
-                        &mut std::io::stderr(),
-                    ) {
+                    if let Ok(true) = parse_compiler_message(ctx, msg, out, err) {
                         inspection_logged = true;
                     }
                 }
@@ -632,9 +629,6 @@ fn parse_timing_info(
     out: &mut dyn Write,
     _err: &mut dyn Write,
 ) -> Result<(), Box<dyn Error>> {
-    if ctx.debug {
-        println!("{:#?}", &event);
-    }
     let name = if let Some(Value::Object(target)) = event.get("target") {
         if let Some(Value::String(target_name)) = target.get("name") {
             target_name
@@ -905,6 +899,81 @@ note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
         assert_eq!(
             check(r#"{"event": "ignored", "name": "tests::test_a_failure_fails", "type": "test"}"#),
             (r#""#.into(), "".into())
+        );
+    }
+
+    #[test]
+    fn test_compiler_message_built_crate() {
+        assert_eq!(
+            check(
+                r#"{"reason":"compiler-artifact","package_id":"cfg-if 0.1.10 (registry+https://github.com/rust-lang/crates.io-index)","target":{"kind":["lib"],"crate_types":["lib"],"name":"cfg-if","src_path":"/Users/gilescope/.cargo/registry/src/github.com-1ecc6299db9ec823/cfg-if-0.1.10/src/lib.rs","edition":"2018","doctest":true,"test":true},"profile":{"opt_level":"0","debuginfo":0,"debug_assertions":true,"overflow_checks":true,"test":false},"features":[],"filenames":["/Users/gilescope/projects/rust-analyzer/target/debug/deps/libcfg_if-f4d43ad0e841b013.rlib","/Users/gilescope/projects/rust-analyzer/target/debug/deps/libcfg_if-f4d43ad0e841b013.rmeta"],"executable":null,"fresh":false}"#
+            ),
+            (r#"Compiling cfg-if 0.1.10"#.into(), "".into())
+        );
+    }
+
+    #[test]
+    fn test_compiler_message_timing_info_do_nothing_below_threshold() {
+        assert_eq!(
+            check(
+                r#"{"reason":"timing-info","package_id":"cfg-if 0.1.10 (registry+https://github.com/rust-lang/crates.io-index)","target":{"kind":["lib"],"crate_types":["lib"],"name":"cfg-if","src_path":"/Users/gilescope/.cargo/registry/src/github.com-1ecc6299db9ec823/cfg-if-0.1.10/src/lib.rs","edition":"2018","doctest":true,"test":true},"mode":"build","duration":0.23798263500000005,"rmeta_time":0.20777650800000003}"#
+            ),
+            (r#""#.into(), "".into())
+        );
+    }
+
+    #[test]
+    fn test_compiler_message_timing_info_add_stats_when_above_threshold() {
+        assert_eq!(
+            check(
+                r#"{"reason":"timing-info","package_id":"cfg-if 0.1.10 (registry+https://github.com/rust-lang/crates.io-index)","target":{"kind":["lib"],"crate_types":["lib"],"name":"cfg-if","src_path":"/Users/gilescope/.cargo/registry/src/github.com-1ecc6299db9ec823/cfg-if-0.1.10/src/lib.rs","edition":"2018","doctest":true,"test":true},"mode":"build","duration":20.2379826350000005,"rmeta_time":20.2077765080000003}"#
+            ),
+            (
+                r#"##t[buildStatisticValue key='build cfg-if' value='20.237983']
+Compiled cfg-if in 20.24s"#
+                    .into(),
+                "".into()
+            )
+        );
+    }
+
+    #[test]
+    fn test_compiler_message_build_finished() {
+        assert_eq!(
+            check(r#"{"reason":"build-finished","success":false}"#),
+            (r#""#.into(), "".into())
+        );
+    }
+
+    #[test]
+    fn test_compiler_message_unused_var_warning() {
+        assert_eq!(
+            check(
+                r#"{"reason":"compiler-message","package_id":"cargo-service-message 0.1.4 (path+file:///Users/gilescope/projects/cargo-service-message2)","target":{"kind":["bin"],"crate_types":["bin"],"name":"cargo-service-message","src_path":"/Users/gilescope/projects/cargo-service-message2/src/bin/cargo-service-message.rs","edition":"2018","doctest":false,"test":true},"message":{"rendered":"warning: unused variable: `x`\n   --> src/bin/cargo-service-message.rs:326:9\n    |\n326 |     let x = \"\";\n    |         ^ help: if this is intentional, prefix it with an underscore: `_x`\n    |","children":[{"children":[],"code":null,"level":"note","message":"`#[warn(unused_variables)]` on by default","rendered":null,"spans":[]},{"children":[],"code":null,"level":"help","message":"if this is intentional, prefix it with an underscore","rendered":null,"spans":[{"byte_end":10932,"byte_start":10931,"column_end":10,"column_start":9,"expansion":null,"file_name":"src/bin/cargo-service-message.rs","is_primary":true,"label":null,"line_end":326,"line_start":326,"suggested_replacement":"_x","suggestion_applicability":"MachineApplicable","text":[{"highlight_end":10,"highlight_start":9,"text":"    let x = \"\";"}]}]}],"code":{"code":"unused_variables","explanation":null},"level":"warning","message":"unused variable: `x`","spans":[{"byte_end":10932,"byte_start":10931,"column_end":10,"column_start":9,"expansion":null,"file_name":"src/bin/cargo-service-message.rs","is_primary":true,"label":null,"line_end":326,"line_start":326,"suggested_replacement":null,"suggestion_applicability":null,"text":[{"highlight_end":10,"highlight_start":9,"text":"    let x = \"\";"}]}]}}"#
+            ),
+            (r###"##t[inspectionType id='unused_variables' category='warning' name='unused_variables' description='no explanation']
+##t[inspection typeId='unused_variables' message='warning: unused variable: `x`|n   --> src/bin/cargo-service-message.rs:326:9|n    |||n326 ||     let x = "";|n    ||         ^ help: if this is intentional, prefix it with an underscore: `_x`|n    ||' file='src/bin/cargo-service-message.rs' line='326' SEVERITY='warning']
+warning: unused variable: `x`
+   --> src/bin/cargo-service-message.rs:326:9
+    |
+326 |     let x = "";
+    |         ^ help: if this is intentional, prefix it with an underscore: `_x`
+    |"###.into(), "".into()) 
+        );
+    }
+
+    #[test]
+    fn test_compiler_message_error() {
+        assert_eq!(
+            check(
+                r###"{"reason":"compiler-message","package_id":"cargo-service-message 0.1.4 (path+file:///Users/gilescope/projects/cargo-service-message2)","target":{"kind":["bin"],"crate_types":["bin"],"name":"cargo-service-message","src_path":"/Users/gilescope/projects/cargo-service-message2/src/bin/cargo-service-message.rs","edition":"2018","doctest":false,"test":true},"message":{"rendered":"error: expected one of `!` or `::`, found `tests`\n   --> src/bin/cargo-service-message.rs:747:6\n    |\n747 | moXd tests {\n    |      ^^^^^ expected one of `!` or `::`\n\n","children":[],"code":null,"level":"error","message":"expected one of `!` or `::`, found `tests`","spans":[{"byte_end":25339,"byte_start":25334,"column_end":11,"column_start":6,"expansion":null,"file_name":"src/bin/cargo-service-message.rs","is_primary":true,"label":"expected one of `!` or `::`","line_end":747,"line_start":747,"suggested_replacement":null,"suggestion_applicability":null,"text":[{"highlight_end":11,"highlight_start":6,"text":"moXd tests {"}]}]}}"###
+            ),
+            (r###"##t[buildProblem description='error: expected one of `!` or `::`, found `tests`|n   --> src/bin/cargo-service-message.rs:747:6|n    |||n747 || moXd tests {|n    ||      ^^^^^ expected one of `!` or `::`|n|n' identity='other']"###.into(), 
+            r##"error: expected one of `!` or `::`, found `tests`
+   --> src/bin/cargo-service-message.rs:747:6
+    |
+747 | moXd tests {
+    |      ^^^^^ expected one of `!` or `::`"##.into()) //TODO:
         );
     }
 }
