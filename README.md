@@ -46,9 +46,11 @@ set env SERVICE_MESSAGE="--debug" for debug messages.
 ## Todo list:
    [ ] Style coverage results so they don't look dreadful.
 
-   [ ] Write some tests now coverage is automatic.
+   [ ] Write some more tests now coverage is automatic.
 
    [ ] If the subcommand causes problems, we could read from stdin E.g. `cargo test --message-format=json | cargo-service-message`
+
+   [ ] Support just/cargo-make?
 
 ## Teamcity Todo list:
 
@@ -75,3 +77,8 @@ https://github.com/rust-lang/rust/pull/77890
 https://github.com/rust-lang/rust/issues/49359
 
 https://github.com/rust-lang/rust/issues/50297
+
+## Release log:
+
+0.1.5 Ignore 3rd party crates in coverage.
+0.1.4 Initial crates release
