@@ -9,6 +9,8 @@ license = "MIT OR Apache-2.0"
 keywords = ["ci", "teamcity"]
 categories = ["development-tools::cargo-plugins", "development-tools::testing", "development-tools::profiling"]
 default-run = "cargo-service-message"
+
+[badges]
 maintenance = { status = "experimental" }
 
 [lib]

@@ -3,8 +3,9 @@
 // extern crate test;
 
 use serde_json::{Deserializer, Map, Value};
+use std::env;
 use std::error::Error;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -46,7 +47,7 @@ fn cargo_service_message(argv: Vec<String>) -> Result<i32, String> {
         return Err(format!("expected 'service-message' as the next argument followed by the standard cargo test arguments but got {}", argv[1]));
     }
 
-    let exit_code = run_tests(&argv[2..]).unwrap();
+    let exit_code = run_cargo(&argv[2..]).unwrap();
     Ok(exit_code)
 }
 
@@ -64,7 +65,27 @@ fn cargo_service_message(argv: Vec<String>) -> Result<i32, String> {
 { "type": "suite", "event": "ok", "passed": 3, "failed": 0, "allowed_fail": 0, "ignored": 0, "measured": 0, "filtered_out": 0 }
 */
 
-fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
+#[cfg(not(target_os = "windows"))]
+const fn default_cargo_home() -> &'static str {
+    "HOME"
+}
+
+#[cfg(target_os = "windows")]
+const fn default_cargo_home() -> &'static str {
+    "USERPROFILE"
+}
+
+fn cargo_home() -> Result<String, std::env::VarError> {
+    let res = env::var("CARGO_HOME").or_else(|_| {
+        env::var(default_cargo_home()).map(|mut home| {
+            home.push_str("/.cargo");
+            home
+        })
+    });
+    res
+}
+
+fn run_cargo(args: &[String]) -> Result<i32, Box<dyn Error>> {
     //Params:
     let debug = std::env::var("SERVICE_MESSAGE")
         .unwrap_or("".into())
@@ -150,13 +171,16 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
         brand: brand.to_string(),
         min_threshold,
     };
+
     for line in buf.lines() {
         if let Ok(ref line) = line {
             let stream = Deserializer::from_str(&line);
             for value in stream.into_iter() {
                 match value {
                     Ok(Value::Object(event)) => {
-                        if let Ok(reported) = process(&event, &ctx) {
+                        if let Ok(reported) =
+                            process(&ctx, &event, &mut std::io::stdout(), &mut std::io::stderr())
+                        {
                             if reported {
                                 inspection_logged = true;
                             }
@@ -215,6 +239,11 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
             .arg("--ignore-not-existing")
             .arg("-o")
             .arg("./target/coverage.json");
+
+        if let Ok(cargo_home) = cargo_home() {
+            grcov.arg("--ignore").arg(format!("{}/**", cargo_home));
+        }
+
         grcov.output().ok();
 
         let coverage =
@@ -247,6 +276,11 @@ fn run_tests(args: &[String]) -> Result<i32, Box<dyn Error>> {
             .arg("--ignore-not-existing")
             .arg("-o")
             .arg("./target/coverage/");
+
+        if let Ok(cargo_home) = cargo_home() {
+            grcov.arg("--ignore").arg(format!("{}/**", cargo_home));
+        }
+
         println!("{:?}", grcov);
         let out = grcov.output();
 
@@ -298,19 +332,29 @@ struct Context {
     min_threshold: f64,
 }
 
-///Returns true if inspection was rasied.
-fn process(event: &Map<String, Value>, ctx: &Context) -> Result<bool, Box<dyn Error>> {
+/// Processes a line of output from cargo and potentially augments that output with service messages.
+/// Returns true if inspection was rasied.
+fn process(
+    ctx: &Context,
+    event: &Map<String, Value>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<bool, Box<dyn Error>> {
     let brand = &ctx.brand;
     let mut inspection_logged = false;
     if let Some(Value::String(compiler_msg)) = event.get("reason") {
         match compiler_msg.as_ref() {
             "timing-info" => {
-                parse_timing_info(ctx, event);
+                parse_timing_info(ctx, event, out, err)?;
             }
             "build-script-executed" => {
                 if let Some(Value::String(package_id)) = event.get("package_id") {
                     // Shame build scripts that run:
-                    println!("Running build script for {}", tidy_package_id(package_id));
+                    writeln!(
+                        out,
+                        "Running build script for {}",
+                        tidy_package_id(package_id)
+                    )?;
                 }
             }
             "compiler-artifact" => {
@@ -321,24 +365,30 @@ fn process(event: &Map<String, Value>, ctx: &Context) -> Result<bool, Box<dyn Er
                 };
                 if let Some(Value::String(package_id)) = event.get("package_id") {
                     // Shame build scripts that run:
-                    println!(
+                    writeln!(
+                        out,
                         "Compiling {} {}",
                         tidy_package_id(package_id),
                         if fresh { "[fresh]" } else { "" }
-                    );
+                    )?;
                 }
             }
             "compiler-message" => {
                 if let Some(Value::Object(msg)) = event.get("message") {
-                    if let Ok(true) = parse_compiler_message(ctx, msg) {
+                    if let Ok(true) = parse_compiler_message(
+                        ctx,
+                        msg,
+                        &mut std::io::stdout(),
+                        &mut std::io::stderr(),
+                    ) {
                         inspection_logged = true;
                     }
                 }
             }
             "build-finished" => {}
             _ => {
-                println!("{}", compiler_msg);
-                println!("{:?}", event);
+                writeln!(out, "{}", compiler_msg)?;
+                writeln!(out, "{:?}", event)?;
             }
         }
     } else if let Some(Value::String(ttype)) = event.get("type") {
@@ -346,58 +396,65 @@ fn process(event: &Map<String, Value>, ctx: &Context) -> Result<bool, Box<dyn Er
             "suite" => match event.get("event") {
                 Some(Value::String(event_name)) => match event_name.as_ref() {
                     "started" => {
-                        println!("##{}[testSuiteStarted name='rust_test_suite' flowId='test_suite_flow_id']", brand);
+                        writeln!(out, "##{}[testSuiteStarted name='rust_test_suite' flowId='test_suite_flow_id']", brand)?;
                     }
                     "ok" => {
-                        println!("##{}[testSuiteFinished name='rust_test_suite' flowId='test_suite_flow_id']", brand);
+                        writeln!(out, "##{}[testSuiteFinished name='rust_test_suite' flowId='test_suite_flow_id']", brand)?;
                     }
                     "failed" => {
                         inspection_logged = true;
-                        println!("##{}[testSuiteFinished name='rust_test_suite' flowId='test_suite_flow_id']", brand);
+                        writeln!(out, "##{}[testSuiteFinished name='rust_test_suite' flowId='test_suite_flow_id']", brand)?;
                     }
                     _ => {
-                        println!("format unknown {:?}", event);
+                        writeln!(out, "format unknown {:?}", event)?;
                     }
                 },
                 _ => {
-                    println!("format {:?}", event);
+                    writeln!(out, "format {:?}", event)?;
                 }
             },
             "bench" => {
                 let name = parse_name(&event);
 
                 if let Some(Value::Number(median)) = event.get("median") {
-                    println!(
+                    writeln!(
+                        out,
                         "##{}[buildStatisticValue key='bench.{}.median' value='{:.6}']",
                         brand,
                         name,
                         median.as_f64().unwrap()
-                    );
+                    )?;
                 }
                 if let Some(Value::Number(devation)) = event.get("deviation") {
-                    println!(
+                    writeln!(
+                        out,
                         "##{}[buildStatisticValue key='bench.{}.deviation' value='{:.6}']",
                         brand, name, devation
-                    );
+                    )?;
                 }
             }
             "test" => match event.get("event") {
                 Some(Value::String(s)) => {
-                    return parse_test_event(ctx, s, event);
+                    return parse_test_event(ctx, s, event, out, err);
                 }
                 _ => {
-                    println!("unhandled event - please report: {:?}", event);
+                    writeln!(out, "unhandled event - please report: {:?}", event)?;
                 }
             },
             _ => {
-                println!("unhandled event - please report: {:?}", event);
+                writeln!(out, "unhandled event - please report: {:?}", event)?;
             }
         }
     }
     Ok(inspection_logged)
 }
 
-fn parse_compiler_message(ctx: &Context, msg: &Map<String, Value>) -> Result<bool, Box<dyn Error>> {
+fn parse_compiler_message(
+    ctx: &Context,
+    msg: &Map<String, Value>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<bool, Box<dyn Error>> {
     if let Some(Value::String(level)) = msg.get("level") {
         let level = if level.as_str() == "error: internal compiler error" {
             "error".to_string()
@@ -448,21 +505,23 @@ fn parse_compiler_message(ctx: &Context, msg: &Map<String, Value>) -> Result<boo
             }
 
             if level == "error" {
-                println!(
+                writeln!(
+                    out,
                     "##{}[buildProblem description='{}' identity='{}']",
                     ctx.brand,
                     escape_message(message),
                     code
-                );
-                eprintln!("{}", message);
+                )?;
+                writeln!(err, "{}", message)?;
             } else {
                 if !message.contains("1 warning emitted") && !message.contains(" warnings emitted")
                 {
-                    println!(
+                    writeln!(
+                        out,
                         "##{}[inspectionType id='{}' category='{}' name='{}' description='{}']",
                         ctx.brand, code, level, code, explanation
-                    );
-                    println!(
+                    )?;
+                    writeln!(out,
                         "##{}[inspection typeId='{}' message='{}' file='{}' line='{}' SEVERITY='{}']",
                         ctx.brand,
                         code,
@@ -470,9 +529,9 @@ fn parse_compiler_message(ctx: &Context, msg: &Map<String, Value>) -> Result<boo
                         file,
                         line,
                         level
-                    );
+                    )?;
                 }
-                println!("{}", message);
+                writeln!(out, "{}", message)?;
             }
 
             //additional attribute='<additional attribute>'
@@ -482,11 +541,11 @@ fn parse_compiler_message(ctx: &Context, msg: &Map<String, Value>) -> Result<boo
         //     Ok(false)
         // }
         } else {
-            println!("unhandled message: {:?}", msg);
+            writeln!(out, "unhandled message: {:?}", msg)?;
             Ok(false)
         }
     } else {
-        println!("{:?}", msg);
+        writeln!(out, "{:?}", msg)?;
         Ok(false)
     }
 }
@@ -495,32 +554,37 @@ fn parse_test_event(
     ctx: &Context,
     event_type: &str,
     event: &Map<String, Value>,
+    out: &mut dyn Write,
+    _err: &mut dyn Write,
 ) -> Result<bool, Box<dyn Error>> {
     //TODO split parsing from output!
     let name = parse_name(&event);
 
     match event_type {
         "started" => {
-            println!(
+            writeln!(
+                out,
                 "##{}[flowStarted flowId='{}' parent='test_suite_flow_id']",
                 ctx.brand, name
-            );
-            println!("##{}[testStarted flowId='{}' name='{}' captureStandardOutput='true' parent='test_suite_flow_id']", ctx.brand, name, name);
+            )?;
+            writeln!(out, "##{}[testStarted flowId='{}' name='{}' captureStandardOutput='true' parent='test_suite_flow_id']", ctx.brand, name, name)?;
             Ok(false)
         }
         "ok" => {
-            if let Some(exec_time) = event.get("exec_time") {
-                println!(
+            if let Some(Value::String(exec_time)) = event.get("exec_time") {
+                writeln!(
+                    out,
                     "##{}[testFinished flowId='{}' name='{}' duration='{}']",
                     ctx.brand, name, name, exec_time
-                );
+                )?;
             } else {
-                println!(
+                writeln!(
+                    out,
                     "##{}[testFinished flowId='{}' name='{}']",
                     ctx.brand, name, name
-                );
+                )?;
             }
-            println!("##{}[flowFinished flowId='{}']", ctx.brand, name);
+            writeln!(out, "##{}[flowFinished flowId='{}']", ctx.brand, name)?;
             Ok(false)
         }
         "ignored" => {
@@ -534,33 +598,40 @@ fn parse_test_event(
                 ""
             };
             if let Some((left, right)) = find_comparison(stdout) {
-                println!("##{}[testFailed type='comparisonFailure' name='{}' flowId='{}' message='test failed' details='{}' expected='{}' actual='{}']", ctx.brand, name, name, escape_message(stdout),
-                escape_message(left),escape_message(right));
+                writeln!(out, "##{}[testFailed type='comparisonFailure' name='{}' flowId='{}' message='test failed' details='{}' expected='{}' actual='{}']", ctx.brand, name, name, escape_message(stdout),
+                escape_message(left),escape_message(right))?;
             } else {
-                println!(
+                writeln!(
+                    out,
                     "##{}[testFailed name='{}' flowId='{}' message='test failed' details='{}']",
                     ctx.brand,
                     name,
                     name,
                     escape_message(stdout)
-                );
+                )?;
             }
 
-            println!(
+            writeln!(
+                out,
                 "##{}[testFinished flowId='{}' name='{}']",
                 ctx.brand, name, name
-            );
-            println!("##{}[flowFinished flowId='{}']", ctx.brand, name);
+            )?;
+            writeln!(out, "##{}[flowFinished flowId='{}']", ctx.brand, name)?;
             Ok(true)
         }
         _ => {
-            println!("failed to parse {:?}", event);
+            writeln!(out, "failed to parse {:?}", event)?;
             Ok(false)
         }
     }
 }
 
-fn parse_timing_info(ctx: &Context, event: &Map<String, Value>) {
+fn parse_timing_info(
+    ctx: &Context,
+    event: &Map<String, Value>,
+    out: &mut dyn Write,
+    _err: &mut dyn Write,
+) -> Result<(), Box<dyn Error>> {
     if ctx.debug {
         println!("{:#?}", &event);
     }
@@ -583,15 +654,17 @@ fn parse_timing_info(ctx: &Context, event: &Map<String, Value>) {
     if let Some(Value::Number(duration)) = event.get("duration") {
         if let Some(duration) = duration.as_f64() {
             if duration > ctx.min_threshold {
-                println!(
+                writeln!(
+                    out,
                     "##{}[buildStatisticValue key='{} {}' value='{:.6}']",
                     ctx.brand, compile_mode, name, duration
-                );
+                )?;
 
-                println!("Compiled {} in {:.2}s", name, duration);
+                writeln!(out, "Compiled {} in {:.2}s", name, duration)?;
             }
         }
     }
+    Ok(())
 }
 fn parse_name(event: &Map<String, Value>) -> String {
     let name = if let Some(Value::String(name)) = event.get("name") {
@@ -697,10 +770,10 @@ mod tests {
         //assert_eq!(Ok(()), cargo_service_message(vec!["path/to/bin".into(),"test".to_string()]));
     }
 
-    #[test]
-    fn test_a_failure_fails() {
-        assert_eq!("red", "green");
-    }
+    // #[test]
+    // fn test_a_failure_fails() {
+    //     assert_eq!("red", "green");
+    // }
 
     #[test]
     fn test_slow() {
@@ -744,5 +817,94 @@ note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
         assert_eq!(lcov, 1067);
         assert_eq!(lmiss, 10975);
         assert_eq!(ltot, 12042);
+    }
+
+    fn check(line: &str) -> (String, String) {
+        let mut out = vec![];
+        let mut err = vec![];
+        let stream = Deserializer::from_str(&line);
+        if let Value::Object(event) = stream.into_iter().next().unwrap().unwrap() {
+            let ctx = Context {
+                debug: false,
+                brand: "t".to_string(),
+                min_threshold: 5.,
+            };
+
+            process(&ctx, &event, &mut out, &mut err).unwrap();
+        } else {
+            assert!(false);
+        }
+
+        let out = String::from_utf8(out).unwrap().trim_end().to_string();
+        let err = String::from_utf8(err).unwrap().trim_end().to_string();
+        (out, err)
+    }
+
+    #[test]
+    fn test_testsuite_start() {
+        assert_eq!(
+            check(r#"{ "type": "suite", "event": "started", "test_count": 3 }"#),
+            (
+                "##t[testSuiteStarted name='rust_test_suite' flowId='test_suite_flow_id']".into(),
+                "".into()
+            )
+        );
+    }
+
+    #[test]
+    fn test_testsuite_ok() {
+        assert_eq!(
+            check(
+                r#"{ "type": "suite", "event": "ok", "passed": 3, "failed": 0, "allowed_fail": 0, "ignored": 0, "measured": 0, "filtered_out": 0 }"#
+            ),
+            (
+                "##t[testSuiteFinished name='rust_test_suite' flowId='test_suite_flow_id']".into(),
+                "".into()
+            )
+        );
+    }
+
+    #[test]
+    fn test_test_started() {
+        assert_eq!(
+            check(r#"{ "type": "test", "event": "started", "name": "tests::test" }"#),
+            (
+                r#"##t[flowStarted flowId='tests.test' parent='test_suite_flow_id']
+##t[testStarted flowId='tests.test' name='tests.test' captureStandardOutput='true' parent='test_suite_flow_id']"#.into(),
+                "".into()
+            )
+        );
+    }
+
+    #[test]
+    fn test_test_success() {
+        assert_eq!(
+            check(r#"{ "type": "test", "event": "ok", "name": "tests::test_slow", "exec_time": "10.000s" }"#),
+            (
+                r#"##t[testFinished flowId='tests.test_slow' name='tests.test_slow' duration='10.000s']
+##t[flowFinished flowId='tests.test_slow']"#.into(),
+                "".into()
+            )
+        );
+    }
+
+    #[test]
+    fn test_test_bench() {
+        assert_eq!(
+            check(
+                r#"{ "type": "bench", "name": "tests::example_bench_add_two", "median": 57, "deviation": 9 }"#
+            ),
+            (r#"##t[buildStatisticValue key='bench.tests.example_bench_add_two.median' value='57.000000']
+##t[buildStatisticValue key='bench.tests.example_bench_add_two.deviation' value='9']"#.into(), "".into())
+        );
+    }
+
+    #[test]
+    fn test_ignored_test_does_nothing() {
+        //TODO: should we not signal there's an ignored test here?
+        assert_eq!(
+            check(r#"{"event": "ignored", "name": "tests::test_a_failure_fails", "type": "test"}"#),
+            (r#""#.into(), "".into())
+        );
     }
 }
