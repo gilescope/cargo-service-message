@@ -1,16 +1,12 @@
-//Not stable:
-// #![feature(test)]
-// extern crate test;
-
 use serde_json::{Deserializer, Map, Value};
 use std::env;
 use std::error::Error;
 use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
+use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -40,6 +36,9 @@ fn main() -> Result<(), String> {
 }
 
 fn cargo_service_message(argv: Vec<String>) -> Result<i32, String> {
+    if env::var("SERVICEMESSAGE").is_ok() {
+        eprintln!("env var SERVICEMESSAGE set but should be SERVICE_MESSAGE");
+    }
     if argv.len() < 2 {
         return Err(format!("Usage: 'test' as the next argument followed by the standard cargo test arguments. Found {:?}", argv));
     }
@@ -50,20 +49,6 @@ fn cargo_service_message(argv: Vec<String>) -> Result<i32, String> {
     let exit_code = run_cargo(&argv[2..]).unwrap();
     Ok(exit_code)
 }
-
-/*
-{ "type": "test", "event": "started", "name": "tests::test" }
-{ "type": "test", "event": "started", "name": "tests::test_fast" }
-{ "type": "test", "event": "started", "name": "tests::test_slow" }
-
-{ "type": "test", "event": "ok", "name": "tests::test", "exec_time": "0.000s" }
-{ "type": "test", "event": "ok", name": "tests::test_fast", "exec_time": "0.000s" }
-{ "type": "test", "event": "ok", "name": "tests::test_slow", "exec_time": "10.000s" }
-{ "type": "bench", "name": "tests::example_bench_add_two", "median": 57, "deviation": 9 }
-{ "type": "suite", "event": "started", "test_count": 3 }
-{"event": "ignored", "name": "tests::test_a_failure_fails", "type": "test"}
-{ "type": "suite", "event": "ok", "passed": 3, "failed": 0, "allowed_fail": 0, "ignored": 0, "measured": 0, "filtered_out": 0 }
-*/
 
 #[cfg(not(target_os = "windows"))]
 const fn default_cargo_home() -> &'static str {
@@ -76,28 +61,27 @@ const fn default_cargo_home() -> &'static str {
 }
 
 fn cargo_home() -> Result<String, std::env::VarError> {
-    let res = env::var("CARGO_HOME").or_else(|_| {
+    env::var("CARGO_HOME").or_else(|_| {
         env::var(default_cargo_home()).map(|mut home| {
             home.push_str("/.cargo");
             home
         })
-    });
-    res
+    })
 }
 
 fn run_cargo(args: &[String]) -> Result<i32, Box<dyn Error>> {
     //Params:
     let debug = std::env::var("SERVICE_MESSAGE")
-        .unwrap_or("".into())
+        .unwrap_or_else(|_| "".into())
         .contains("--debug");
     let mut coverage = std::env::var("SERVICE_MESSAGE")
-        .unwrap_or("".into())
+        .unwrap_or_else(|_| "".into())
         .contains("--cover");
 
     let cargo_cmd = &args[0]; //TODO: support +nightly
 
     if coverage && cargo_cmd == "test" {
-        if let Err(_) = Command::new("grcov").arg("--version").output() {
+        if Command::new("grcov").arg("--version").output().is_err() {
             coverage = false;
             println!("cargo-service-message: grcov not found on path so no coverage. (cargo install grcov?)");
         } else {
@@ -133,6 +117,7 @@ fn run_cargo(args: &[String]) -> Result<i32, Box<dyn Error>> {
             }
         )); //TODO: this needs to be before --
         cmd.arg("-Ztimings=json,html,info");
+        //TODO: this creates cargo-timings.html and friends in the root - we should move those to the target dir.
     }
 
     let mode = if contains("--release", args) {
@@ -154,10 +139,12 @@ fn run_cargo(args: &[String]) -> Result<i32, Box<dyn Error>> {
     }
 
     if coverage && (cargo_cmd == "test" || cargo_cmd == "build") {
-        //TOOD: add to RUSTFLAGS if already set and check to see if flag already in there.
-        //-Zexperimental-coverage
+        // TODO: maybe support -Zexperimental-coverage
+
+        let flags = env::var("RUSTFLAGS").unwrap_or_else(|_| "".to_string());
+        // TODO: dedup flags if already set
+        cmd.env("RUSTFLAGS", format!("{} -Zinstrument-coverage -Zprofile -Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off -Zpanic_abort_tests -Cpanic=abort", flags));
         cmd.env("CARGO_INCREMENTAL", "0");
-        cmd.env("RUSTFLAGS", "-Zinstrument-coverage -Zprofile -Ccodegen-units=1 -Copt-level=0 -Clink-dead-code -Coverflow-checks=off -Zpanic_abort_tests -Cpanic=abort");
         cmd.env("RUSTDOCFLAGS", "-Cpanic=abort");
     }
 
@@ -229,101 +216,111 @@ fn run_cargo(args: &[String]) -> Result<i32, Box<dyn Error>> {
     });
 
     if coverage {
-        let mut grcov = Command::new("grcov");
-        //TODO: support CARGO_TARGET_DIR!
-        grcov
-            .arg(format!("./target/{}/", mode))
-            .arg("-s")
-            .arg(".")
-            .arg("-t")
-            .arg("covdir")
-            .arg("--llvm")
-            .arg("--branch")
-            .arg("--ignore-not-existing")
-            .arg("-o")
-            .arg("./target/coverage.json");
-
-        if let Ok(cargo_home) = cargo_home() {
-            grcov.arg("--ignore").arg(format!("{}/**", cargo_home));
-        }
-
-        grcov.output().ok();
-
-        let coverage =
-            std::fs::read_to_string("./target/coverage.json").expect("coverage.json file to exist");
-
-        let (percent, lcov, _lmiss, ltot) = parse_cov(&coverage);
-
-        println!(
-            "##{}[buildStatisticValue key='CodeCoverageL' value='{:.6}']",
-            brand, percent
-        );
-        println!(
-            "##{}[buildStatisticValue key='CodeCoverageAbsLCovered' value='{:.6}']",
-            brand, lcov
-        );
-        println!(
-            "##{}[buildStatisticValue key='CodeCoverageAbsLTotal' value='{:.6}']",
-            brand, ltot
-        );
-
-        let mut grcov = Command::new("grcov");
-        grcov
-            .arg(format!("./target/{}/", mode))
-            .arg("-s")
-            .arg(".")
-            .arg("-t")
-            .arg("html")
-            .arg("--llvm")
-            .arg("--branch")
-            .arg("--ignore-not-existing")
-            .arg("-o")
-            .arg("./target/coverage/");
-
-        if let Ok(cargo_home) = cargo_home() {
-            grcov.arg("--ignore").arg(format!("{}/**", cargo_home));
-        }
-
-        println!("{:?}", grcov);
-        let out = grcov.output();
-
-        if let Err(err) = out {
-            eprintln!("grcov error while processing coverage: {}", err);
-        //println!(out.stdout);
-        } else {
-            //An attempt to override the css file...
-            //std::thread::sleep(Duration::new(1, 0));
-            // use std::fs::File;
-            // use std::io::Write;
-            // let file_name = std::env::current_dir()
-            //     .unwrap()
-            //     .join("target/coverage/grcov.css");
-            // println!("going to {:?}", &file_name);
-
-            // if let Err(rr) = std::fs::remove_file(&file_name) {
-            //     eprintln!("Error {:?}", rr);
-            // }
-            // println!("did {:?}", &file_name);
-            // println!("{}", CSS);
-            // {
-            //     let mut f = File::create(file_name).expect("Unable to create file");
-            //     f.write_all(CSS.as_bytes()).expect("Unable to write data");
-            // }
-            // f.drop();
-
-            println!(
-                "##{}[publishArtifacts '{}**=>coverage.zip']",
-                brand,
-                std::env::current_dir()
-                    .unwrap()
-                    .join("target/coverage/")
-                    .into_os_string()
-                    .into_string()
-                    .unwrap()
-            );
-        }
+        gen_coverage_report(&ctx, mode);
     }
     result
+}
+
+fn gen_coverage_report(ctx: &Context, mode: &str) {
+    let target = target_dir();
+    let mut grcov = grcov_cmd(
+        &target.join(mode),
+        "html",
+        target.join("coverage").to_str().unwrap(),
+    );
+    println!("{:?}", grcov);
+    let grcov_html_out = grcov.output();
+
+    let json_filename: PathBuf = target.join("coverage.json");
+    let mut grcov = grcov_cmd(
+        &target.join(mode),
+        "covdir",
+        json_filename.to_str().unwrap(),
+    );
+    match grcov.output() {
+        Ok(output) => {
+            if let Ok(coverage) = std::fs::read_to_string(json_filename) {
+                let (percent, lcov, _lmiss, ltot) = parse_cov(&coverage);
+
+                println!(
+                    "##{}[buildStatisticValue key='CodeCoverageL' value='{:.6}']",
+                    ctx.brand, percent
+                );
+                println!(
+                    "##{}[buildStatisticValue key='CodeCoverageAbsLCovered' value='{:.6}']",
+                    ctx.brand, lcov
+                );
+                println!(
+                    "##{}[buildStatisticValue key='CodeCoverageAbsLTotal' value='{:.6}']",
+                    ctx.brand, ltot
+                );
+            } else {
+                println!("Coverage didn't produce json file - output follows:");
+                println!("{}", &String::from_utf8_lossy(&output.stdout));
+                println!("{}", &String::from_utf8_lossy(&output.stderr));
+                println!("-- fin --");
+            }
+        }
+        Err(err) => println!("coverage failed to execute: {:?}", err),
+    }
+
+    if let Err(err) = grcov_html_out {
+        eprintln!("grcov error while processing coverage: {}", err);
+    } else {
+        //An attempt to override the css file...
+        //std::thread::sleep(Duration::new(1, 0));
+        // use std::fs::File;
+        // use std::io::Write;
+        // let file_name = std::env::current_dir()
+        //     .unwrap()
+        //     .join("target/coverage/grcov.css");
+        // println!("going to {:?}", &file_name);
+
+        // if let Err(rr) = std::fs::remove_file(&file_name) {
+        //     eprintln!("Error {:?}", rr);
+        // }
+        // println!("did {:?}", &file_name);
+        // println!("{}", CSS);
+        // {
+        //     let mut f = File::create(file_name).expect("Unable to create file");
+        //     f.write_all(CSS.as_bytes()).expect("Unable to write data");
+        // }
+        // f.drop();
+
+        println!(
+            "##{}[publishArtifacts '{}/**=>coverage.zip']",
+            ctx.brand,
+            target.join("coverage").to_str().unwrap()
+        );
+    }
+}
+
+fn target_dir() -> PathBuf {
+    env::var("CARGO_TARGET_DIR")
+        .map(|s| PathBuf::from_str(&s).unwrap())
+        .unwrap_or_else(|_| std::env::current_dir().unwrap().join("target"))
+}
+
+/// Command to generate coverage
+fn grcov_cmd(input_dir: &Path, output_type: &str, output_dir: &str) -> Command {
+    let mut grcov = Command::new("grcov");
+    grcov
+        .arg(input_dir.to_str().unwrap())
+        .arg("-s")
+        .arg(".")
+        .arg("-t")
+        .arg(output_type)
+        .arg("--llvm")
+        .arg("--branch")
+        .arg("--ignore-not-existing")
+        .arg("-o")
+        .arg(output_dir);
+
+    // Ignore 3rd party crates
+    if let Ok(cargo_home) = cargo_home() {
+        grcov.arg("--ignore").arg(format!("{}/**", cargo_home));
+    }
+    grcov
 }
 
 //static CSS: &str = include_str!("grcov.css");
@@ -713,31 +710,28 @@ fn find_comparison(msg: &str) -> Option<(&str, &str)> {
 fn parse_cov(cov: &str) -> (f64, u64, u64, u64) {
     let stream = Deserializer::from_str(&cov);
     for value in stream.into_iter() {
-        match value {
-            Ok(Value::Object(map)) => {
-                let percent = if let Some(Value::Number(num)) = map.get("coveragePercent") {
-                    num.as_f64().unwrap_or(0.)
-                } else {
-                    0.
-                };
-                let lcov = if let Some(Value::Number(num)) = map.get("linesCovered") {
-                    num.as_i64().unwrap_or(0) as u64
-                } else {
-                    0
-                };
-                let lmiss = if let Some(Value::Number(num)) = map.get("linesMissed") {
-                    num.as_i64().unwrap_or(0) as u64
-                } else {
-                    0
-                };
-                let ltot = if let Some(Value::Number(num)) = map.get("linesTotal") {
-                    num.as_i64().unwrap_or(0) as u64
-                } else {
-                    0
-                };
-                return (percent, lcov, lmiss, ltot);
-            }
-            _ => {}
+        if let Ok(Value::Object(map)) = value {
+            let percent = if let Some(Value::Number(num)) = map.get("coveragePercent") {
+                num.as_f64().unwrap_or(0.)
+            } else {
+                0.
+            };
+            let lcov = if let Some(Value::Number(num)) = map.get("linesCovered") {
+                num.as_i64().unwrap_or(0) as u64
+            } else {
+                0
+            };
+            let lmiss = if let Some(Value::Number(num)) = map.get("linesMissed") {
+                num.as_i64().unwrap_or(0) as u64
+            } else {
+                0
+            };
+            let ltot = if let Some(Value::Number(num)) = map.get("linesTotal") {
+                num.as_i64().unwrap_or(0) as u64
+            } else {
+                0
+            };
+            return (percent, lcov, lmiss, ltot);
         }
     }
     (0., 0, 0, 0)

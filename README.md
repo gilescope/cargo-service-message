@@ -80,5 +80,8 @@ https://github.com/rust-lang/rust/issues/50297
 
 ## Release log:
 
+Unreleased: Support for CARGO_TARGET_DIR
+
 0.1.5 Ignore 3rd party crates in coverage.
+
 0.1.4 Initial crates release
