@@ -80,6 +80,8 @@ https://github.com/rust-lang/rust/issues/50297
 
 ## Release log:
 
+0.1.7 (Unreleased): Have coverage work with proc-macros.
+
 0.1.6 (Unreleased): Honor CARGO_TARGET_DIR
 
 0.1.5 Ignore 3rd party crates in coverage.
