@@ -71,12 +71,11 @@ fn cargo_home() -> Result<String, std::env::VarError> {
 
 fn run_cargo(args: &[String]) -> Result<i32, Box<dyn Error>> {
     //Params:
-    let debug = std::env::var("SERVICE_MESSAGE")
-        .unwrap_or_else(|_| "".into())
-        .contains("--debug");
-    let mut coverage = std::env::var("SERVICE_MESSAGE")
-        .unwrap_or_else(|_| "".into())
-        .contains("--cover");
+    let params = std::env::var("SERVICE_MESSAGE").unwrap_or_else(|_| "".into());
+
+    let debug = params.contains("--debug");
+    let mut coverage = params.contains("--cover");
+    let coverage_no_report = params.contains("--cover-without-report");
 
     let cargo_cmd = &args[0]; //TODO: support +nightly
 
@@ -157,8 +156,9 @@ fn run_cargo(args: &[String]) -> Result<i32, Box<dyn Error>> {
     let mut inspection_logged = false;
     let ctx = Context {
         debug,
-        brand: brand.to_string(),
+        brand: brand.to_owned(),
         min_threshold,
+        cargo_cmd: cargo_cmd.to_owned(),
     };
 
     for line in buf.lines() {
@@ -217,7 +217,7 @@ fn run_cargo(args: &[String]) -> Result<i32, Box<dyn Error>> {
         }
     });
 
-    if coverage {
+    if coverage && !coverage_no_report {
         gen_coverage_report(&ctx, mode);
     }
     result
@@ -331,6 +331,7 @@ struct Context {
     debug: bool,
     brand: String,
     min_threshold: f64,
+    cargo_cmd: String,
 }
 
 /// Processes a line of output from cargo and potentially augments that output with service messages.
@@ -584,7 +585,16 @@ fn parse_test_event(
             Ok(false)
         }
         "ignored" => {
-            //todo maybe don't ignore the ignored tests?
+            // Bench ignores all the other tests. So if someone's running bench and test
+            // we don't want to return the results of the tests and say they're ignored
+            // - it's jolly confusing!
+            if ctx.cargo_cmd != "bench" {
+                writeln!(
+                    out,
+                    "##{}[testIgnored name='{}' message='ignore reason not yet available.']",
+                    ctx.brand, name
+                )?;
+            }
             Ok(false)
         }
         "failed" => {
@@ -816,8 +826,9 @@ note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
         if let Value::Object(event) = stream.into_iter().next().unwrap().unwrap() {
             let ctx = Context {
                 debug: false,
-                brand: "t".to_string(),
+                brand: "t".to_owned(),
                 min_threshold: 5.,
+                cargo_cmd: "test".to_owned(),
             };
 
             process(&ctx, &event, &mut out, &mut err).unwrap();
@@ -828,6 +839,12 @@ note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
         let out = String::from_utf8(out).unwrap().trim_end().to_string();
         let err = String::from_utf8(err).unwrap().trim_end().to_string();
         (out, err)
+    }
+
+    #[test]
+    #[ignore]
+    fn this_is_an_example_ignored_test() {
+        println!("You shouldn't see me unless you ran cargo test -- --ignored --nocapture");
     }
 
     #[test]
@@ -894,7 +911,7 @@ note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
         //TODO: should we not signal there's an ignored test here?
         assert_eq!(
             check(r#"{"event": "ignored", "name": "tests::test_a_failure_fails", "type": "test"}"#),
-            (r#""#.into(), "".into())
+            (r#"##t[testIgnored name='tests.test_a_failure_fails' message='ignore reason not yet available.']"#.into(), "".into())
         );
     }
 
@@ -938,6 +955,16 @@ Compiled cfg-if in 20.24s"#
         assert_eq!(
             check(r#"{"reason":"build-finished","success":false}"#),
             (r#""#.into(), "".into())
+        );
+    }
+
+    #[test]
+    fn test_build_script_message() {
+        assert_eq!(
+            check(
+                r#"{"reason":"build-script-executed","package_id":"libc 0.2.79 (registry+https://github.com/rust-lang/crates.io-index)","linked_libs":[],"linked_paths":[],"cfgs":["freebsd11","libc_priv_mod_use","libc_union","libc_const_size_of","libc_align","libc_core_cvoid","libc_packedN","libc_cfg_target_vendor"],"env":[],"out_dir":"/Users/gilescope/projects/cargo-service-message2/target/debug/build/libc-5d2ac53ab99800d7/out"}"#
+            ),
+            (r#"Running build script for libc 0.2.79"#.into(), "".into())
         );
     }
 
